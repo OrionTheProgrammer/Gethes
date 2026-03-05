@@ -7,6 +7,7 @@ __all__ = [
     "audio",
     "cloud_sync",
     "config",
+    "daily_logic",
     "freesound_sfx",
     "i18n",
     "icon_pack",

@@ -56,9 +56,14 @@ class RoguelikeGame:
         self.vision_radius = 5
         self.rng = random.Random()
 
-    def start(self) -> None:
+    def start(self, seed: int | None = None) -> None:
         if self.active:
             return
+
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.seed(int(seed))
 
         self.active = True
         self.depth = 1

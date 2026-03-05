@@ -28,6 +28,21 @@ ACHIEVEMENTS: tuple[AchievementDef, ...] = (
         desc_key="achievement.snake_score_120.desc",
     ),
     AchievementDef(
+        achievement_id="daily_first_win",
+        title_key="achievement.daily_first_win.title",
+        desc_key="achievement.daily_first_win.desc",
+    ),
+    AchievementDef(
+        achievement_id="daily_streak_3",
+        title_key="achievement.daily_streak_3.title",
+        desc_key="achievement.daily_streak_3.desc",
+    ),
+    AchievementDef(
+        achievement_id="daily_dual_clear",
+        title_key="achievement.daily_dual_clear.title",
+        desc_key="achievement.daily_dual_clear.desc",
+    ),
+    AchievementDef(
         achievement_id="hangman_win",
         title_key="achievement.hangman_win.title",
         desc_key="achievement.hangman_win.desc",

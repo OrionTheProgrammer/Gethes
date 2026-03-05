@@ -7,8 +7,9 @@ import uuid
 
 
 GRAPHICS_LEVELS = {"low", "medium", "high"}
-LANGUAGE_MODES = {"auto", "es", "en", "pt"}
+LANGUAGE_MODES = {"auto", "es", "en", "pt", "fr", "de"}
 SYSTER_MODES = {"off", "lite", "lore", "hybrid"}
+THEME_STYLE_MODES = {"terminal", "split_h", "split_v", "grid", "diagonal", "blueprint"}
 
 
 @dataclass
@@ -18,6 +19,8 @@ class GameConfig:
     theme_accent_color: str = ""
     theme_panel_color: str = ""
     theme_dim_color: str = ""
+    theme_secondary_color: str = ""
+    theme_style: str = ""
     theme_scan_strength: float = 1.0
     theme_glow_strength: float = 1.0
     theme_particles_strength: float = 1.0
@@ -65,6 +68,11 @@ class ConfigStore:
             cfg.theme_panel_color = payload["theme_panel_color"]
         if isinstance(payload.get("theme_dim_color"), str):
             cfg.theme_dim_color = payload["theme_dim_color"]
+        if isinstance(payload.get("theme_secondary_color"), str):
+            cfg.theme_secondary_color = payload["theme_secondary_color"]
+        theme_style = payload.get("theme_style")
+        if isinstance(theme_style, str) and theme_style in THEME_STYLE_MODES:
+            cfg.theme_style = theme_style
         theme_scan_strength = payload.get("theme_scan_strength")
         if isinstance(theme_scan_strength, (int, float)) and 0.2 <= float(theme_scan_strength) <= 2.0:
             cfg.theme_scan_strength = float(theme_scan_strength)

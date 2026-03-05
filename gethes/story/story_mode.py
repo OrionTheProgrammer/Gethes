@@ -529,6 +529,33 @@ class StoryMode:
         percent = int(ratio * 100)
         return self.app.tr("game.story.progress", bar=bar, percent=percent)
 
+    def _refresh_action_buttons(
+        self,
+        choices: list[dict[str, str]],
+        selected: dict[str, str] | None,
+    ) -> None:
+        buttons: list[tuple[str, str, bool]] = []
+        for idx, choice in enumerate(choices[:9], start=1):
+            label = choice["label"].strip()
+            if len(label) > 24:
+                label = f"{label[:21]}..."
+            buttons.append((f"{idx}. {label}", str(idx), True))
+
+        has_prev = bool(self.page_history) or self.page_index > 0
+        next_enabled = (not choices) or (selected is not None)
+        files_enabled = len(self.secret_unlocked_ids) > 0
+        buttons.extend(
+            [
+                (self.app.tr("ui.action.prev"), "prev", has_prev),
+                (self.app.tr("ui.action.next"), "next", next_enabled),
+                (self.app.tr("ui.action.files"), "files", files_enabled),
+                (self.app.tr("ui.action.exit"), "exit", True),
+            ]
+        )
+        set_buttons = getattr(self.app.ui, "set_action_buttons", None)
+        if callable(set_buttons):
+            set_buttons(buttons)
+
     def _render_page(self, message: str = "") -> None:
         page = self.pages[self.page_index]
         title = self.app.tr("game.story.title", title=self.story_title)
@@ -591,6 +618,7 @@ class StoryMode:
             lines.extend(["", *unlocked_messages])
 
         self.app.ui.set_screen("\n".join(lines))
+        self._refresh_action_buttons(choices, selected)
         self.app.audio.play("message")
         self.app.on_story_progress(
             page=self.page_index + 1,

@@ -32,6 +32,23 @@ class ToastNotification:
     icon_key: str = "mdi:information-outline"
 
 
+@dataclass
+class ActionButton:
+    label: str
+    command: str
+    enabled: bool = True
+
+
+THEME_VISUAL_STYLES: set[str] = {
+    "terminal",
+    "split_h",
+    "split_v",
+    "grid",
+    "diagonal",
+    "blueprint",
+}
+
+
 class ConsoleUI:
     def __init__(self, title: str, on_command: Callable[[str], None]) -> None:
         pygame.init()
@@ -80,6 +97,8 @@ class ConsoleUI:
         self.panel_color = pygame.Color("#0D131B")
         self.dim_color = pygame.Color("#6B8495")
         self.accent_color = pygame.Color("#6CB7E8")
+        self.secondary_color = pygame.Color("#101827")
+        self.theme_style = "terminal"
         self.scan_strength = 1.0
         self.glow_strength = 1.0
         self.particle_strength = 1.0
@@ -96,6 +115,8 @@ class ConsoleUI:
 
         self.notifications: list[ToastNotification] = []
         self.max_notifications = 4
+        self.action_buttons: list[ActionButton] = []
+        self._action_button_hit_areas: list[tuple[pygame.Rect, ActionButton]] = []
         self.icons = IconPack()
         self.icons.preload(
             [
@@ -151,6 +172,10 @@ class ConsoleUI:
         self.intro_elapsed = 0.0
         self.intro_duration = 2.6
         self.intro_title = "Gethes"
+        self.ambient_glitch_cooldown = random.uniform(5.0, 11.0)
+        self.error_overlay_timer = 0.0
+        self.error_overlay_cooldown = random.uniform(7.5, 13.5)
+        self.error_overlay_text = ""
         self._bg_cache_surface: pygame.Surface | None = None
         self._bg_cache_key: tuple[object, ...] | None = None
 
@@ -228,6 +253,7 @@ class ConsoleUI:
             self.screen_shake_phase += dt
 
             self._update_notifications(dt)
+            self._update_ambient_effects(dt)
 
             for event in pygame.event.get():
                 self._handle_event(event)
@@ -261,6 +287,8 @@ class ConsoleUI:
         if event.type == pygame.MOUSEBUTTONDOWN:
             self._register_activity()
             if self.intro_active:
+                return
+            if event.button == 1 and self._handle_action_button_click(event.pos):
                 return
             if event.button == 4:
                 self.output_scroll += 2
@@ -364,6 +392,56 @@ class ConsoleUI:
         self.command_handler(raw)
         self._play_sound("message")
 
+    def _handle_action_button_click(self, pos: tuple[int, int]) -> bool:
+        if not self.input_enabled or not self._action_button_hit_areas:
+            return False
+        for rect, button in self._action_button_hit_areas:
+            if not button.enabled:
+                continue
+            if rect.collidepoint(pos):
+                self._dispatch_command(button.command)
+                return True
+        return False
+
+    def _dispatch_command(self, raw: str) -> None:
+        command = raw.strip()
+        if not command:
+            return
+
+        if command.startswith("__append__:"):
+            payload = command.split(":", 1)[1]
+            if payload and len(self.input_buffer) < 280:
+                budget = 280 - len(self.input_buffer)
+                self.input_buffer += payload[:budget]
+                self.typing_glow = min(1.0, self.typing_glow + 0.12)
+                self._play_sound("typing")
+            return
+        if command == "__backspace__":
+            if self.input_buffer:
+                self.input_buffer = self.input_buffer[:-1]
+                self.typing_glow = min(1.0, self.typing_glow + 0.08)
+                self._play_sound("typing")
+            return
+        if command == "__clear__":
+            if self.input_buffer:
+                self.input_buffer = ""
+                self.typing_glow = min(1.0, self.typing_glow + 0.08)
+                self._play_sound("tick")
+            return
+        if command == "__submit__":
+            self._submit_command()
+            return
+
+        self.command_flash = 1.0
+        self.feedback_flash = min(1.0, self.feedback_flash + 0.24)
+        self.input_buffer = ""
+        self.history.append(command)
+        self.history_index = len(self.history)
+        if self.echo_commands:
+            self.write(f"{self.prompt_text} {command}")
+        self.command_handler(command)
+        self._play_sound("message")
+
     def _close_requested(self) -> None:
         if self.on_close is not None:
             self.on_close()
@@ -393,6 +471,8 @@ class ConsoleUI:
         accent_color: str | None = None,
         panel_color: str | None = None,
         dim_color: str | None = None,
+        secondary_color: str | None = None,
+        theme_style: str = "terminal",
         scan_strength: float = 1.0,
         glow_strength: float = 1.0,
         particle_strength: float = 1.0,
@@ -437,6 +517,15 @@ class ConsoleUI:
         else:
             self.dim_color = self._mix(self.fg_color, self.bg_color, 0.45)
 
+        if secondary_color:
+            try:
+                self.secondary_color = pygame.Color(secondary_color)
+            except ValueError:
+                self.secondary_color = self._derive_secondary(self.bg_color, self.accent_color)
+        else:
+            self.secondary_color = self._derive_secondary(self.bg_color, self.accent_color)
+
+        self.theme_style = self._normalize_theme_style(theme_style)
         self.scan_strength = max(0.2, min(2.0, float(scan_strength)))
         self.glow_strength = max(0.2, min(2.0, float(glow_strength)))
         self.particle_strength = max(0.2, min(2.0, float(particle_strength)))
@@ -509,6 +598,30 @@ class ConsoleUI:
 
     def set_mode_chip(self, value: str) -> None:
         self.mode_chip_text = value
+
+    def set_action_buttons(
+        self,
+        items: Sequence[tuple[str, str, bool] | tuple[str, str]],
+    ) -> None:
+        buttons: list[ActionButton] = []
+        for item in items:
+            if len(item) == 2:
+                raw_label, raw_command = item
+                enabled = True
+            else:
+                raw_label, raw_command, enabled = item
+            label = str(raw_label).strip()
+            command = str(raw_command).strip()
+            if not label or not command:
+                continue
+            buttons.append(ActionButton(label=label, command=command, enabled=bool(enabled)))
+
+        self.action_buttons = buttons
+        self._action_button_hit_areas = []
+
+    def clear_action_buttons(self) -> None:
+        self.action_buttons = []
+        self._action_button_hit_areas = []
 
     def reload_visual_assets(self) -> None:
         self._rogue_asset_raw_cache = {}
@@ -605,6 +718,7 @@ class ConsoleUI:
         self.input_enabled = enabled
         if not enabled:
             self.input_buffer = ""
+            self.clear_action_buttons()
 
     def set_echo(self, enabled: bool) -> None:
         self.echo_commands = enabled
@@ -651,6 +765,8 @@ class ConsoleUI:
             self.feedback_flash = min(1.0, self.feedback_flash + 0.5)
             self.status_flash = min(1.0, self.status_flash + 0.4)
             self.screen_shake = max(self.screen_shake, 0.55)
+            self.trigger_glitch(0.26)
+            self._trigger_error_overlay(force_text="TERMINAL WARNING")
         else:
             self.feedback_flash = min(1.0, self.feedback_flash + 0.24)
 
@@ -707,8 +823,10 @@ class ConsoleUI:
             self.bg_color.normalize(),
             self.fg_color.normalize(),
             self.accent_color.normalize(),
+            self.secondary_color.normalize(),
             self.panel_color.normalize(),
             self.dim_color.normalize(),
+            self.theme_style,
             self.graphics_level,
             round(self.scan_strength, 3),
             round(self.glow_strength, 3),
@@ -719,6 +837,36 @@ class ConsoleUI:
             return
 
         surface = pygame.Surface((self.width, self.height))
+        self._paint_background(surface)
+
+        self._bg_cache_surface = surface.convert()
+        self._bg_cache_key = key
+
+    def _paint_background(self, surface: pygame.Surface) -> None:
+        style = self.theme_style
+        if style == "split_h":
+            self._paint_split_background(surface, vertical=False)
+            self._paint_scanlines(surface, mix_ratio=0.09)
+            return
+        if style == "split_v":
+            self._paint_split_background(surface, vertical=True)
+            self._paint_scanlines(surface, mix_ratio=0.08)
+            return
+        if style == "grid":
+            self._paint_grid_background(surface)
+            self._paint_scanlines(surface, mix_ratio=0.06)
+            return
+        if style == "diagonal":
+            self._paint_diagonal_background(surface)
+            self._paint_scanlines(surface, mix_ratio=0.07)
+            return
+        if style == "blueprint":
+            self._paint_blueprint_background(surface)
+            self._paint_scanlines(surface, mix_ratio=0.05)
+            return
+        self._paint_terminal_background(surface)
+
+    def _paint_terminal_background(self, surface: pygame.Surface) -> None:
         base = self.bg_color
         top = self._mix(base, self.accent_color, min(0.16, 0.05 + (0.03 * self.glow_strength)))
         line_step = 2 if self.graphics_level == "low" else 1
@@ -727,21 +875,7 @@ class ConsoleUI:
             blend = (0.1 * (1.0 - t)) + (0.04 * (0.5 + 0.5 * math.sin(t * 5.0)))
             color = self._mix(base, top, blend)
             pygame.draw.line(surface, color, (0, y), (self.width, y), width=line_step)
-
-        scan = self._mix(
-            self.bg_color,
-            self.fg_color,
-            min(0.18, 0.02 + (0.035 * self.scan_strength)),
-        )
-        if self.graphics_level == "low":
-            step = max(6, self._scale_px(8))
-        elif self.graphics_level == "high":
-            step = max(2, self._scale_px(3))
-        else:
-            step = max(3, self._scale_px(4))
-        step = max(1, int(step / max(0.6, self.scan_strength)))
-        for y in range(0, self.height, step):
-            pygame.draw.line(surface, scan, (0, y), (self.width, y))
+        self._paint_scanlines(surface, mix_ratio=0.1)
 
         if self.graphics_level != "low":
             stripe = self._mix(self.accent_color, self.bg_color, 0.75)
@@ -758,8 +892,107 @@ class ConsoleUI:
                     1,
                 )
 
-        self._bg_cache_surface = surface.convert()
-        self._bg_cache_key = key
+    def _paint_split_background(self, surface: pygame.Surface, vertical: bool) -> None:
+        first = self._mix(self.bg_color, self.accent_color, 0.06)
+        second = self._mix(self.secondary_color, self.panel_color, 0.06)
+        blend = max(self._scale_px(32), 18)
+        if vertical:
+            mid = self.width // 2
+            for x in range(0, self.width):
+                if x < mid - blend:
+                    color = first
+                elif x > mid + blend:
+                    color = second
+                else:
+                    ratio = (x - (mid - blend)) / max(1, blend * 2)
+                    color = self._mix(first, second, ratio)
+                pygame.draw.line(surface, color, (x, 0), (x, self.height))
+            seam = self._mix(self.accent_color, self.fg_color, 0.18)
+            pygame.draw.line(surface, seam, (mid, 0), (mid, self.height), 1)
+            return
+
+        mid = self.height // 2
+        for y in range(0, self.height):
+            if y < mid - blend:
+                color = first
+            elif y > mid + blend:
+                color = second
+            else:
+                ratio = (y - (mid - blend)) / max(1, blend * 2)
+                color = self._mix(first, second, ratio)
+            pygame.draw.line(surface, color, (0, y), (self.width, y))
+        seam = self._mix(self.accent_color, self.fg_color, 0.18)
+        pygame.draw.line(surface, seam, (0, mid), (self.width, mid), 1)
+
+    def _paint_grid_background(self, surface: pygame.Surface) -> None:
+        base = self._mix(self.bg_color, self.secondary_color, 0.23)
+        top = self._mix(base, self.accent_color, 0.08)
+        line_step = 2 if self.graphics_level == "low" else 1
+        for y in range(0, self.height, line_step):
+            t = y / max(1, self.height - 1)
+            color = self._mix(base, top, 0.18 * (1.0 - t))
+            pygame.draw.line(surface, color, (0, y), (self.width, y), width=line_step)
+
+        minor = max(self._scale_px(22), 14)
+        major = minor * 4
+        minor_color = self._mix(self.secondary_color, self.dim_color, 0.38)
+        major_color = self._mix(self.accent_color, self.fg_color, 0.22)
+        for x in range(0, self.width, minor):
+            color = major_color if x % major == 0 else minor_color
+            pygame.draw.line(surface, color, (x, 0), (x, self.height), 1)
+        for y in range(0, self.height, minor):
+            color = major_color if y % major == 0 else minor_color
+            pygame.draw.line(surface, color, (0, y), (self.width, y), 1)
+
+    def _paint_diagonal_background(self, surface: pygame.Surface) -> None:
+        surface.fill(self._mix(self.bg_color, self.panel_color, 0.16))
+        band = max(self._scale_px(86), 48)
+        stripe = max(8, band // 2)
+        tone_a = self._mix(self.bg_color, self.accent_color, 0.14)
+        tone_b = self._mix(self.secondary_color, self.panel_color, 0.12)
+        index = 0
+        for offset in range(-self.height, self.width + self.height, band):
+            color = tone_a if index % 2 == 0 else tone_b
+            pygame.draw.line(
+                surface,
+                color,
+                (offset, 0),
+                (offset - self.height, self.height),
+                stripe,
+            )
+            index += 1
+
+    def _paint_blueprint_background(self, surface: pygame.Surface) -> None:
+        base = self._mix(self.bg_color, self.secondary_color, 0.28)
+        surface.fill(base)
+        dot_step = max(self._scale_px(18), 12)
+        dot_color = self._mix(self.dim_color, self.accent_color, 0.22)
+        for y in range(dot_step // 2, self.height, dot_step):
+            shift = 0 if ((y // dot_step) % 2 == 0) else (dot_step // 2)
+            for x in range(shift + (dot_step // 2), self.width, dot_step):
+                pygame.draw.circle(surface, dot_color, (x, y), 1)
+
+        ring_center = (self.width // 2, self.height // 2)
+        ring_color = self._mix(self.accent_color, self.fg_color, 0.24)
+        for idx in range(3):
+            radius = max(self._scale_px(90), int(min(self.width, self.height) * (0.18 + (idx * 0.12))))
+            pygame.draw.circle(surface, ring_color, ring_center, radius, 1)
+
+    def _paint_scanlines(self, surface: pygame.Surface, mix_ratio: float) -> None:
+        scan = self._mix(
+            self.bg_color,
+            self.fg_color,
+            min(0.2, max(0.02, mix_ratio + (0.028 * self.scan_strength))),
+        )
+        if self.graphics_level == "low":
+            step = max(6, self._scale_px(8))
+        elif self.graphics_level == "high":
+            step = max(2, self._scale_px(3))
+        else:
+            step = max(3, self._scale_px(4))
+        step = max(1, int(step / max(0.6, self.scan_strength)))
+        for y in range(0, self.height, step):
+            pygame.draw.line(surface, scan, (0, y), (self.width, y))
 
     def _update_notifications(self, dt: float) -> None:
         if not self.notifications:
@@ -771,6 +1004,42 @@ class ConsoleUI:
             if toast.age < toast.lifetime:
                 kept.append(toast)
         self.notifications = kept
+
+    def _update_ambient_effects(self, dt: float) -> None:
+        if self.intro_active or self.graphics_level == "low":
+            self.error_overlay_timer = max(0.0, self.error_overlay_timer - dt)
+            return
+
+        self.error_overlay_timer = max(0.0, self.error_overlay_timer - dt)
+        self.ambient_glitch_cooldown -= dt
+        self.error_overlay_cooldown -= dt
+
+        if self.ambient_glitch_cooldown <= 0.0:
+            self.ambient_glitch_cooldown = random.uniform(4.6, 11.2)
+            if random.random() < (0.62 if self.graphics_level == "high" else 0.44):
+                burst = random.uniform(0.16, 0.48)
+                self.trigger_glitch(burst)
+
+        if self.error_overlay_cooldown <= 0.0:
+            self.error_overlay_cooldown = random.uniform(8.5, 14.0)
+            probability = 0.32 if self.graphics_level == "high" else 0.18
+            if random.random() < probability:
+                self._trigger_error_overlay()
+
+    def _trigger_error_overlay(self, force_text: str = "") -> None:
+        self.error_overlay_timer = max(self.error_overlay_timer, random.uniform(0.24, 0.72))
+        if force_text.strip():
+            self.error_overlay_text = force_text.strip()[:32]
+        else:
+            self.error_overlay_text = random.choice(
+                [
+                    "SIGNAL DESYNC",
+                    "FRAME CORRUPT",
+                    "MEMORY ECHO",
+                    "TRACE NOISE",
+                    "SCAN FAULT",
+                ]
+            )
 
     def trigger_glitch(self, duration: float = 0.8) -> None:
         self.glitch_timer = max(self.glitch_timer, duration)
@@ -810,6 +1079,19 @@ class ConsoleUI:
             capped = self._scale_px(1380)
             max_content_w = min(max_content_w, capped)
         max_content_w = max(self._scale_px(560), max_content_w)
+        actions_h = self._action_buttons_panel_height(max_content_w=max_content_w)
+        min_output_h = self._scale_px(110)
+        max_actions_h = max(
+            0,
+            self.height
+            - (margin * 2)
+            - header_h
+            - status_h
+            - input_h
+            - (gap * 3)
+            - min_output_h,
+        )
+        actions_h = min(actions_h, max_actions_h)
         content_x = ((self.width - max_content_w) // 2) + shake_x
         self._layout_rect = pygame.Rect(content_x, margin + shake_y, max_content_w, self.height - (margin * 2))
 
@@ -820,49 +1102,74 @@ class ConsoleUI:
             max_content_w,
             status_h,
         )
-        input_rect = pygame.Rect(
-            content_x,
-            status_rect.top - gap - input_h + shake_y,
-            max_content_w,
-            input_h,
-        )
+        input_bottom = status_rect.top - gap + shake_y
+        input_rect = pygame.Rect(content_x, input_bottom - input_h, max_content_w, input_h)
+        actions_rect = pygame.Rect(content_x, input_rect.top - gap - actions_h, max_content_w, actions_h)
         output_rect = pygame.Rect(
             content_x,
             header_rect.bottom + gap + shake_y,
             max_content_w,
-            input_rect.top - header_rect.bottom - (gap * 2),
+            actions_rect.top - header_rect.bottom - (gap * 2),
         )
         self._apply_panel_entry_animation(header_rect, output_rect, input_rect, status_rect)
 
         self._draw_panel(output_rect)
         self._draw_panel(input_rect)
+        if actions_h > 0:
+            self._draw_panel(actions_rect)
         self._draw_panel(header_rect)
         self._draw_panel(status_rect)
 
         self._draw_header(header_rect)
         self._draw_output(output_rect)
+        if actions_h > 0:
+            self._draw_action_buttons(actions_rect)
+        else:
+            self._action_button_hit_areas = []
         self._draw_input(input_rect)
         self._draw_status(status_rect)
         self._draw_notifications()
+        self._draw_error_overlay()
 
     def _draw_background(self) -> None:
         self._rebuild_background_cache()
         if self._bg_cache_surface is not None:
             self.screen.blit(self._bg_cache_surface, (0, 0))
 
+        moving_base = self._mix(self.accent_color, self.secondary_color, 0.38)
         glow = self._mix(
-            self.accent_color,
+            moving_base,
             self.bg_color,
             max(0.32, min(0.75, 0.58 - ((self.glow_strength - 1.0) * 0.15))),
         )
         y1 = int((0.5 + 0.5 * math.sin(self.animation_phase * 0.7)) * max(1, self.height - 1))
-        pygame.draw.line(self.screen, glow, (0, y1), (self.width, y1), 1)
+        if self.theme_style == "split_v":
+            x1 = int((0.5 + 0.5 * math.sin(self.animation_phase * 0.7)) * max(1, self.width - 1))
+            pygame.draw.line(self.screen, glow, (x1, 0), (x1, self.height), 1)
+        elif self.theme_style == "diagonal":
+            span = self.height // 3
+            pygame.draw.line(self.screen, glow, (0, y1), (self.width, max(0, y1 - span)), 1)
+        else:
+            pygame.draw.line(self.screen, glow, (0, y1), (self.width, y1), 1)
         if self.graphics_level in {"medium", "high"}:
             y2 = int((0.5 + 0.5 * math.sin((self.animation_phase * 0.9) + 1.3)) * max(1, self.height - 1))
-            pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.4), (0, y2), (self.width, y2), 1)
+            if self.theme_style == "split_v":
+                x2 = int((0.5 + 0.5 * math.sin((self.animation_phase * 0.9) + 1.3)) * max(1, self.width - 1))
+                pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.4), (x2, 0), (x2, self.height), 1)
+            else:
+                pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.4), (0, y2), (self.width, y2), 1)
         if self.graphics_level == "high":
             y3 = int((0.5 + 0.5 * math.sin((self.animation_phase * 1.25) + 0.4)) * max(1, self.height - 1))
-            pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.58), (0, y3), (self.width, y3), 1)
+            if self.theme_style == "diagonal":
+                pygame.draw.line(
+                    self.screen,
+                    self._mix(glow, self.bg_color, 0.58),
+                    (0, y3),
+                    (self.width, max(0, y3 - (self.height // 4))),
+                    1,
+                )
+            else:
+                pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.58), (0, y3), (self.width, y3), 1)
 
         if self.graphics_level in {"medium", "high"}:
             layers = 2 if self.graphics_level == "high" else 1
@@ -870,7 +1177,11 @@ class ConsoleUI:
                 parallax = 0.62 + (layer_idx * 0.48)
                 base_count = (13 if self.graphics_level == "medium" else 19) + (layer_idx * 7)
                 particle_count = max(2, int(round(base_count * self.particle_strength)))
-                particle_color = self._mix(self.accent_color, self.fg_color, 0.22 + (0.08 * layer_idx))
+                particle_color = self._mix(
+                    self._mix(self.accent_color, self.secondary_color, 0.35),
+                    self.fg_color,
+                    0.22 + (0.08 * layer_idx),
+                )
 
                 for idx in range(particle_count):
                     seed = idx + (layer_idx * 53)
@@ -968,7 +1279,9 @@ class ConsoleUI:
         self.screen.blit(overlay, (0, 0))
 
     def _draw_panel(self, rect: pygame.Rect) -> None:
-        radius = self._scale_px(9)
+        style = self.theme_style
+        radius = self._scale_px(5) if style in {"split_h", "split_v", "grid"} else self._scale_px(9)
+        border_width = 2 if style in {"split_h", "split_v"} else 1
         shadow = pygame.Rect(rect.x, rect.y + self._scale_px(2), rect.width, rect.height)
         pygame.draw.rect(
             self.screen,
@@ -977,7 +1290,47 @@ class ConsoleUI:
             border_radius=radius,
         )
         pygame.draw.rect(self.screen, self.panel_color, rect, border_radius=radius)
-        pygame.draw.rect(self.screen, self.accent_color, rect, width=1, border_radius=radius)
+        if style in {"split_h", "split_v"}:
+            bar = pygame.Rect(rect)
+            if style == "split_h":
+                bar.height = max(self._scale_px(3), 2)
+            else:
+                bar.width = max(self._scale_px(3), 2)
+            bar_color = self._mix(self.secondary_color, self.accent_color, 0.45)
+            pygame.draw.rect(self.screen, bar_color, bar, border_radius=radius)
+        if style == "grid":
+            inset = rect.inflate(-self._scale_px(8), -self._scale_px(8))
+            if inset.width > 8 and inset.height > 8:
+                grid_color = self._mix(self.secondary_color, self.dim_color, 0.42)
+                for x in range(inset.x, inset.right, max(self._scale_px(24), 12)):
+                    pygame.draw.line(self.screen, grid_color, (x, inset.y), (x, inset.bottom), 1)
+                for y in range(inset.y, inset.bottom, max(self._scale_px(24), 12)):
+                    pygame.draw.line(self.screen, grid_color, (inset.x, y), (inset.right, y), 1)
+        if style == "diagonal":
+            diag = self._mix(self.secondary_color, self.accent_color, 0.32)
+            pygame.draw.line(
+                self.screen,
+                diag,
+                (rect.x + self._scale_px(2), rect.bottom - self._scale_px(2)),
+                (rect.right - self._scale_px(2), rect.y + self._scale_px(2)),
+                1,
+            )
+        if style == "blueprint":
+            corner = self._mix(self.secondary_color, self.accent_color, 0.5)
+            arm = self._scale_px(10)
+            pygame.draw.line(self.screen, corner, (rect.x, rect.y), (rect.x + arm, rect.y), 1)
+            pygame.draw.line(self.screen, corner, (rect.x, rect.y), (rect.x, rect.y + arm), 1)
+            pygame.draw.line(self.screen, corner, (rect.right, rect.y), (rect.right - arm, rect.y), 1)
+            pygame.draw.line(self.screen, corner, (rect.right, rect.y), (rect.right, rect.y + arm), 1)
+            pygame.draw.line(self.screen, corner, (rect.x, rect.bottom), (rect.x + arm, rect.bottom), 1)
+            pygame.draw.line(self.screen, corner, (rect.x, rect.bottom), (rect.x, rect.bottom - arm), 1)
+            pygame.draw.line(self.screen, corner, (rect.right, rect.bottom), (rect.right - arm, rect.bottom), 1)
+            pygame.draw.line(self.screen, corner, (rect.right, rect.bottom), (rect.right, rect.bottom - arm), 1)
+        pygame.draw.rect(self.screen, self.accent_color, rect, width=border_width, border_radius=radius)
+        if style == "terminal":
+            top_bar = pygame.Rect(rect.x + self._scale_px(2), rect.y + self._scale_px(2), rect.width - self._scale_px(4), self._scale_px(2))
+            glow = self._mix(self.accent_color, self.secondary_color, 0.24)
+            pygame.draw.rect(self.screen, glow, top_bar, border_radius=self._scale_px(2))
         if self.feedback_flash > 0.0:
             edge_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2)
             glow_alpha = int(34 * min(1.0, self.feedback_flash) * self.glow_strength)
@@ -1005,6 +1358,40 @@ class ConsoleUI:
         pulse = 0.45 + 0.4 * (0.5 + 0.5 * math.sin(self.animation_phase * 2.4))
         pulse += self.command_flash * 0.45
         glow = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.15 * pulse)
+        style = self.theme_style
+
+        if style in {"split_h", "split_v"}:
+            if style == "split_h":
+                top_band = pygame.Rect(rect.x + self._scale_px(2), rect.y + self._scale_px(2), rect.width - self._scale_px(4), self._scale_px(4))
+                pygame.draw.rect(self.screen, self._mix(self.secondary_color, self.accent_color, 0.45), top_band, border_radius=self._scale_px(2))
+            else:
+                left_band = pygame.Rect(rect.x + self._scale_px(2), rect.y + self._scale_px(2), self._scale_px(4), rect.height - self._scale_px(4))
+                pygame.draw.rect(self.screen, self._mix(self.secondary_color, self.accent_color, 0.45), left_band, border_radius=self._scale_px(2))
+        elif style == "grid":
+            grid_color = self._mix(self.secondary_color, self.dim_color, 0.5)
+            step = max(self._scale_px(20), 12)
+            for x in range(rect.x + self._scale_px(8), rect.right - self._scale_px(8), step):
+                pygame.draw.line(self.screen, grid_color, (x, rect.y + self._scale_px(6)), (x, rect.bottom - self._scale_px(6)), 1)
+        elif style == "diagonal":
+            diag_color = self._mix(self.secondary_color, self.accent_color, 0.42)
+            pygame.draw.line(
+                self.screen,
+                diag_color,
+                (rect.x + self._scale_px(8), rect.bottom - self._scale_px(4)),
+                (rect.x + self._scale_px(44), rect.y + self._scale_px(4)),
+                2,
+            )
+        elif style == "blueprint":
+            tick = self._mix(self.secondary_color, self.accent_color, 0.5)
+            tick_gap = max(self._scale_px(24), 14)
+            for x in range(rect.x + self._scale_px(12), rect.right - self._scale_px(12), tick_gap):
+                pygame.draw.line(
+                    self.screen,
+                    tick,
+                    (x, rect.bottom - self._scale_px(3)),
+                    (x, rect.bottom - self._scale_px(8)),
+                    1,
+                )
 
         title_x = rect.x + self._scale_px(12)
         icon_size = self._scale_px(22)
@@ -1022,12 +1409,21 @@ class ConsoleUI:
         header_surface = self.header_font.render(self.header_text, True, glow)
         self.screen.blit(header_surface, (title_x, rect.y + self._scale_px(12)))
 
-        chip_surface = self.chip_font.render(self.mode_chip_text, True, self.bg_color)
+        chip_text = self._contrast_text(self.accent_color)
+        chip_surface = self.chip_font.render(self.mode_chip_text, True, chip_text)
         chip_padding_x = self._scale_px(14)
         chip_w = chip_surface.get_width() + (chip_padding_x * 2)
         chip_h = rect.height - self._scale_px(14)
         chip_rect = pygame.Rect(rect.right - chip_w - self._scale_px(10), rect.y + self._scale_px(7), chip_w, chip_h)
-        pygame.draw.rect(self.screen, self.accent_color, chip_rect, border_radius=self._scale_px(8))
+        chip_bg = self._mix(self.accent_color, self.secondary_color, 0.22)
+        pygame.draw.rect(self.screen, chip_bg, chip_rect, border_radius=self._scale_px(8))
+        pygame.draw.rect(
+            self.screen,
+            self._mix(self.fg_color, self.accent_color, 0.18),
+            chip_rect,
+            width=1,
+            border_radius=self._scale_px(8),
+        )
         self.screen.blit(
             chip_surface,
             (
@@ -1783,6 +2179,163 @@ class ConsoleUI:
                 1,
             )
 
+    def _action_buttons_panel_height(self, max_content_w: int) -> int:
+        if not self.input_enabled or not self.action_buttons:
+            return 0
+
+        pad = self._scale_px(8)
+        gap = self._scale_px(8)
+        button_h = self._scale_px(28)
+        min_button_w = self._scale_px(90)
+        usable_w = max(1, max_content_w - (pad * 2))
+        max_cols = max(1, min(5, (usable_w + gap) // max(1, (min_button_w + gap))))
+        cols = max(1, min(max_cols, len(self.action_buttons)))
+        rows = (len(self.action_buttons) + cols - 1) // cols
+        return (pad * 2) + (rows * button_h) + ((rows - 1) * gap)
+
+    def _draw_action_buttons(self, rect: pygame.Rect) -> None:
+        if not self.input_enabled or not self.action_buttons:
+            self._action_button_hit_areas = []
+            return
+
+        self._action_button_hit_areas = []
+        layout = self._layout_action_buttons(rect)
+        mouse_pos = pygame.mouse.get_pos()
+
+        for button, button_rect in layout:
+            hovered = button.enabled and button_rect.collidepoint(mouse_pos)
+            enabled_mix = 0.42 if button.enabled else 0.22
+            base = self._mix(self.panel_color, self.accent_color, enabled_mix)
+            if hovered:
+                base = self._mix(base, self.fg_color, 0.22)
+            border = self._mix(self.accent_color, self.fg_color, 0.28 if button.enabled else 0.1)
+            text_color = self.fg_color if button.enabled else self._mix(self.fg_color, self.bg_color, 0.55)
+
+            pygame.draw.rect(
+                self.screen,
+                base,
+                button_rect,
+                border_radius=self._scale_px(8),
+            )
+            pygame.draw.rect(
+                self.screen,
+                border,
+                button_rect,
+                width=1,
+                border_radius=self._scale_px(8),
+            )
+            if hovered:
+                glow = pygame.Surface((button_rect.width, button_rect.height), pygame.SRCALPHA)
+                glow_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2)
+                pygame.draw.rect(
+                    glow,
+                    (glow_color.r, glow_color.g, glow_color.b, 52),
+                    glow.get_rect(),
+                    border_radius=self._scale_px(8),
+                )
+                self.screen.blit(glow, button_rect.topleft)
+
+            text_limit = button_rect.width - self._scale_px(12)
+            label = self._tail_to_width(button.label, text_limit, self.chip_font)
+            text_surface = self.chip_font.render(label, True, text_color)
+            self.screen.blit(
+                text_surface,
+                (
+                    button_rect.x + (button_rect.width - text_surface.get_width()) // 2,
+                    button_rect.y + (button_rect.height - text_surface.get_height()) // 2,
+                ),
+            )
+            self._action_button_hit_areas.append((button_rect, button))
+
+    def _layout_action_buttons(self, rect: pygame.Rect) -> list[tuple[ActionButton, pygame.Rect]]:
+        if not self.action_buttons:
+            return []
+
+        pad = self._scale_px(8)
+        gap = self._scale_px(8)
+        button_h = self._scale_px(28)
+        min_button_w = self._scale_px(90)
+        usable_w = max(1, rect.width - (pad * 2))
+        max_cols = max(1, min(5, (usable_w + gap) // max(1, (min_button_w + gap))))
+        cols = max(1, min(max_cols, len(self.action_buttons)))
+        button_w = max(
+            min_button_w,
+            (usable_w - ((cols - 1) * gap)) // cols,
+        )
+
+        layout: list[tuple[ActionButton, pygame.Rect]] = []
+        max_rows = max(1, (max(1, rect.height - (pad * 2) + gap)) // max(1, (button_h + gap)))
+        total = min(len(self.action_buttons), max_rows * cols)
+        rows = (total + cols - 1) // cols
+        y = rect.y + pad
+
+        for row in range(rows):
+            row_start = row * cols
+            row_end = min(total, row_start + cols)
+            row_items = self.action_buttons[row_start:row_end]
+            items_count = len(row_items)
+            row_w = (items_count * button_w) + ((items_count - 1) * gap)
+            x = rect.x + ((rect.width - row_w) // 2)
+
+            for idx, button in enumerate(row_items):
+                button_rect = pygame.Rect(
+                    x + (idx * (button_w + gap)),
+                    y,
+                    button_w,
+                    button_h,
+                )
+                layout.append((button, button_rect))
+            y += button_h + gap
+
+        return layout
+
+    def _draw_error_overlay(self) -> None:
+        if self.error_overlay_timer <= 0.0:
+            return
+
+        decay = min(1.0, self.error_overlay_timer / 0.72)
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        alert = pygame.Color("#FF5F6F")
+        accent = self._mix(alert, self.accent_color, 0.32)
+
+        bars = 3 if self.graphics_level == "medium" else 5
+        for _ in range(bars):
+            h = random.randint(max(2, self._scale_px(3)), max(4, self._scale_px(10)))
+            y = random.randint(0, max(0, self.height - h))
+            a = int((24 + random.randint(0, 26)) * decay)
+            pygame.draw.rect(overlay, (accent.r, accent.g, accent.b, a), pygame.Rect(0, y, self.width, h))
+
+        glitch_w = max(self._scale_px(120), int(self.width * 0.24))
+        glitch_h = self._scale_px(28)
+        gx = random.randint(0, max(0, self.width - glitch_w))
+        gy = random.randint(self._scale_px(24), max(self._scale_px(25), self.height - glitch_h - self._scale_px(18)))
+        pygame.draw.rect(
+            overlay,
+            (alert.r, alert.g, alert.b, int(72 * decay)),
+            pygame.Rect(gx, gy, glitch_w, glitch_h),
+            border_radius=self._scale_px(4),
+        )
+
+        if self.error_overlay_text:
+            text = self._tail_to_width(self.error_overlay_text, glitch_w - self._scale_px(10), self.chip_font)
+            text_surface = self.chip_font.render(text, True, pygame.Color("#FFE9EC"))
+            overlay.blit(
+                text_surface,
+                (
+                    gx + self._scale_px(6),
+                    gy + (glitch_h - text_surface.get_height()) // 2,
+                ),
+            )
+
+        vignette_alpha = int(38 * decay)
+        pygame.draw.rect(
+            overlay,
+            (alert.r, alert.g, alert.b, vignette_alpha),
+            overlay.get_rect(),
+            width=max(1, self._scale_px(2)),
+        )
+        self.screen.blit(overlay, (0, 0))
+
     def _draw_status(self, rect: pygame.Rect) -> None:
         pulse = 0.4 + (0.6 * (0.5 + 0.5 * math.sin((self.animation_phase * 2.2) + 1.1)))
         ratio = min(1.0, self.status_flash + (self.feedback_flash * 0.55))
@@ -2082,11 +2635,39 @@ class ConsoleUI:
         return pygame.Color(nr, ng, nb)
 
     @staticmethod
+    def _normalize_theme_style(raw_style: object) -> str:
+        if not isinstance(raw_style, str):
+            return "terminal"
+        token = raw_style.strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "splitv": "split_v",
+            "split_vertical": "split_v",
+            "splith": "split_h",
+            "split_horizontal": "split_h",
+            "diag": "diagonal",
+        }
+        normalized = aliases.get(token, token)
+        if normalized not in THEME_VISUAL_STYLES:
+            return "terminal"
+        return normalized
+
+    @staticmethod
+    def _contrast_text(color: pygame.Color) -> pygame.Color:
+        luma = (0.299 * color.r) + (0.587 * color.g) + (0.114 * color.b)
+        if luma >= 140:
+            return pygame.Color("#0A0E14")
+        return pygame.Color("#F2F7FF")
+
+    @staticmethod
     def _derive_accent(color: pygame.Color) -> pygame.Color:
         nr = min(255, int(color.r * 0.7) + 35)
         ng = min(255, int(color.g * 0.7) + 45)
         nb = min(255, int(color.b * 0.7) + 25)
         return pygame.Color(nr, ng, nb)
+
+    @staticmethod
+    def _derive_secondary(base: pygame.Color, accent: pygame.Color) -> pygame.Color:
+        return ConsoleUI._mix(base, accent, 0.18)
 
     @staticmethod
     def _ease_out_cubic(value: float) -> float:

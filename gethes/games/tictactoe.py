@@ -124,6 +124,15 @@ class TicTacToeGame:
     def _is_draw(self) -> bool:
         return all(value in {"X", "O"} for value in self.board)
 
+    def _refresh_action_buttons(self) -> None:
+        buttons: list[tuple[str, str, bool]] = []
+        for idx, value in enumerate(self.board, start=1):
+            occupied = value in {"X", "O"}
+            label = value if occupied else str(idx)
+            buttons.append((label, str(idx), not occupied))
+        buttons.append((self.app.tr("ui.action.exit"), "exit", True))
+        self.app.ui.set_action_buttons(buttons)
+
     def _render(self, message: str = "") -> None:
         b = self.board
         board_text = "\n".join(
@@ -150,6 +159,7 @@ class TicTacToeGame:
             line_values = [str(value + 1) for value in self.winning_line]
             lines.append(self.app.tr("game.ttt.win_line", cells=", ".join(line_values)))
         self.app.ui.set_screen("\n".join(lines))
+        self._refresh_action_buttons()
 
     def _finish(self, message: str, finished: bool, won: bool = False, draw: bool = False) -> None:
         self.active = False

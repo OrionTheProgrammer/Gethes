@@ -41,10 +41,16 @@ class SnakeGame:
         self.tick_accumulator = 0.0
         self.pending_direction: Direction | None = None
         self.foods_eaten = 0
+        self.rng = random.Random()
 
-    def start(self) -> None:
+    def start(self, seed: int | None = None) -> None:
         if self.active:
             return
+
+        if seed is None:
+            self.rng.seed()
+        else:
+            self.rng.seed(int(seed))
 
         cx = self.width // 2
         cy = self.height // 2
@@ -158,7 +164,7 @@ class SnakeGame:
             for x in range(self.width)
             if (x, y) not in self.snake
         ]
-        return random.choice(available)
+        return self.rng.choice(available)
 
     def _render(self, message: str = "") -> None:
         board = [[" " for _ in range(self.width)] for _ in range(self.height)]

@@ -22,6 +22,25 @@ def test_validate_theme_payload_accepts_unlock_and_fx() -> None:
     assert message == ""
 
 
+def test_validate_theme_payload_accepts_secondary_style_and_font() -> None:
+    payload = {
+        "themes": {
+            "duo_mode": {
+                "bg": "#0A0D14",
+                "fg": "#D0DAEE",
+                "accent": "#6CB7E8",
+                "secondary": "#1B2742",
+                "style": "split_v",
+                "font_family": "consolas",
+                "fx": {"scan": 1.0, "glow": 1.0, "particles": 0.9},
+            }
+        }
+    }
+    valid, message = validate_theme_payload(payload)
+    assert valid is True
+    assert message == ""
+
+
 def test_validate_theme_payload_rejects_invalid_entry() -> None:
     payload = {
         "themes": {

@@ -20,9 +20,11 @@ from gethes.config import (
     GRAPHICS_LEVELS,
     LANGUAGE_MODES,
     SYSTER_MODES,
+    THEME_STYLE_MODES,
     ConfigStore,
     GameConfig,
 )
+from gethes.daily_logic import next_daily_streak, normalize_date_key
 from gethes.freesound_sfx import FreesoundSFXService
 from gethes.games.codebreaker import CodeBreakerGame
 from gethes.games.hangman import HangmanGame
@@ -53,6 +55,9 @@ class ThemePreset:
     accent: str = ""
     panel: str = ""
     dim: str = ""
+    secondary: str = ""
+    style: str = "terminal"
+    font_family: str = ""
     scan_strength: float = 1.0
     glow_strength: float = 1.0
     particle_strength: float = 1.0
@@ -61,119 +66,194 @@ class ThemePreset:
 
 BUILTIN_THEME_PRESETS: dict[str, ThemePreset] = {
     "obsidian": ThemePreset(
-        bg="#07090D",
-        fg="#C7D5DF",
-        accent="#6CB7E8",
-        panel="#0D131B",
-        dim="#6B8495",
-        scan_strength=1.0,
-        glow_strength=1.0,
-        particle_strength=1.0,
+        bg="#06080C",
+        fg="#D2DCE8",
+        accent="#78BDEB",
+        panel="#0D141E",
+        dim="#6E849A",
+        secondary="#182337",
+        style="terminal",
+        font_family="consolas",
+        scan_strength=1.04,
+        glow_strength=1.08,
+        particle_strength=0.92,
     ),
     "void": ThemePreset(
-        bg="#040507",
-        fg="#8DA8BA",
-        accent="#4F90B7",
-        panel="#0A1018",
-        dim="#5A6F83",
-        scan_strength=0.86,
-        glow_strength=0.8,
-        particle_strength=0.72,
+        bg="#030408",
+        fg="#9BB3CF",
+        accent="#6EA7D0",
+        panel="#09101A",
+        dim="#667D95",
+        secondary="#16263E",
+        style="split_v",
+        font_family="lucidaconsole",
+        scan_strength=0.82,
+        glow_strength=0.9,
+        particle_strength=0.7,
     ),
     "deepsea": ThemePreset(
-        bg="#050B12",
-        fg="#91D8FF",
-        accent="#39C4FF",
-        panel="#0A1724",
-        dim="#6E9FBC",
+        bg="#04101A",
+        fg="#ADE6FF",
+        accent="#4BCBFF",
+        panel="#0B1A2B",
+        dim="#79A9C8",
+        secondary="#0B2F59",
+        style="grid",
+        font_family="consolas",
         scan_strength=1.1,
-        glow_strength=1.12,
-        particle_strength=0.95,
+        glow_strength=1.16,
+        particle_strength=1.0,
     ),
     "matrix": ThemePreset(
-        bg="#050A07",
-        fg="#7AF57C",
-        accent="#3DEB65",
-        panel="#09130D",
-        dim="#5BA56A",
-        scan_strength=1.22,
-        glow_strength=1.02,
-        particle_strength=1.1,
+        bg="#040B07",
+        fg="#A6FFB0",
+        accent="#6AFF86",
+        panel="#091510",
+        dim="#65B37B",
+        secondary="#17361D",
+        style="blueprint",
+        font_family="couriernew",
+        scan_strength=1.24,
+        glow_strength=1.06,
+        particle_strength=1.12,
     ),
     "amber": ThemePreset(
-        bg="#0D0905",
-        fg="#FFCF84",
-        accent="#EAA24F",
-        panel="#1A1208",
-        dim="#B2874D",
-        scan_strength=0.95,
-        glow_strength=0.92,
-        particle_strength=0.74,
+        bg="#0C0703",
+        fg="#FFD9A2",
+        accent="#FFB85A",
+        panel="#1B1106",
+        dim="#BE8C50",
+        secondary="#4A2F13",
+        style="diagonal",
+        font_family="lucidaconsole",
+        scan_strength=0.9,
+        glow_strength=0.96,
+        particle_strength=0.78,
     ),
     "crimson_archive": ThemePreset(
-        bg="#10070A",
-        fg="#F0B7C1",
-        accent="#FF5A7A",
-        panel="#1A0B11",
-        dim="#A87984",
-        scan_strength=1.16,
-        glow_strength=1.18,
-        particle_strength=0.88,
+        bg="#11060A",
+        fg="#F8C1CD",
+        accent="#FF4D73",
+        panel="#1C0A11",
+        dim="#AF7A89",
+        secondary="#3A1124",
+        style="split_h",
+        font_family="consolas",
+        scan_strength=1.2,
+        glow_strength=1.24,
+        particle_strength=0.94,
         unlock_achievement="hangman_win",
     ),
     "neon_grid": ThemePreset(
-        bg="#06040F",
-        fg="#CCBEFF",
-        accent="#8F63FF",
-        panel="#110B1F",
-        dim="#8E7DBE",
+        bg="#05030F",
+        fg="#D6C8FF",
+        accent="#A66BFF",
+        panel="#120B20",
+        dim="#9480C8",
+        secondary="#2B1C64",
+        style="grid",
+        font_family="consolas",
         scan_strength=1.3,
-        glow_strength=1.25,
-        particle_strength=1.22,
+        glow_strength=1.3,
+        particle_strength=1.24,
         unlock_achievement="snake_score_120",
     ),
     "protocol_ice": ThemePreset(
-        bg="#050A10",
-        fg="#CDEBFF",
-        accent="#6FD8FF",
-        panel="#0A151F",
-        dim="#82A4BC",
-        scan_strength=0.84,
-        glow_strength=1.08,
-        particle_strength=0.7,
+        bg="#050A11",
+        fg="#D4F0FF",
+        accent="#7DE2FF",
+        panel="#0A1621",
+        dim="#85A9C4",
+        secondary="#1C4461",
+        style="split_h",
+        font_family="consolas",
+        scan_strength=0.82,
+        glow_strength=1.1,
+        particle_strength=0.74,
         unlock_achievement="codebreaker_win",
     ),
+    "sunken_gold": ThemePreset(
+        bg="#090603",
+        fg="#FFECC2",
+        accent="#FFCC63",
+        panel="#171005",
+        dim="#C19A64",
+        secondary="#4A3111",
+        style="diagonal",
+        font_family="couriernew",
+        scan_strength=0.94,
+        glow_strength=1.04,
+        particle_strength=0.86,
+        unlock_achievement="daily_first_win",
+    ),
+    "pulse_vector": ThemePreset(
+        bg="#050613",
+        fg="#D2E3FF",
+        accent="#86A3FF",
+        panel="#11152B",
+        dim="#8F9FD2",
+        secondary="#232A59",
+        style="split_v",
+        font_family="consolas",
+        scan_strength=1.28,
+        glow_strength=1.22,
+        particle_strength=1.16,
+        unlock_achievement="daily_streak_3",
+    ),
     "companion_dusk": ThemePreset(
-        bg="#080A12",
-        fg="#D6DAF1",
-        accent="#8DA1DF",
-        panel="#101425",
-        dim="#8B96BC",
-        scan_strength=0.74,
-        glow_strength=0.9,
-        particle_strength=0.62,
+        bg="#080A13",
+        fg="#DDE2F8",
+        accent="#9AAAF0",
+        panel="#101428",
+        dim="#909BC4",
+        secondary="#2A203B",
+        style="split_h",
+        font_family="lucidaconsole",
+        scan_strength=0.78,
+        glow_strength=0.95,
+        particle_strength=0.66,
         unlock_achievement="story_companion_route",
     ),
     "abyss_protocol": ThemePreset(
         bg="#02040A",
-        fg="#C8D8FF",
-        accent="#6D8BFF",
-        panel="#070D17",
-        dim="#6D7FA5",
-        scan_strength=1.18,
-        glow_strength=1.22,
-        particle_strength=1.2,
+        fg="#CDDFFF",
+        accent="#6E9BFF",
+        panel="#070D19",
+        dim="#7285AF",
+        secondary="#1A2445",
+        style="terminal",
+        font_family="consolas",
+        scan_strength=1.22,
+        glow_strength=1.25,
+        particle_strength=1.18,
         unlock_achievement="rogue_victory",
     ),
-    "ghost_echo": ThemePreset(
-        bg="#04070B",
-        fg="#BFE7F0",
-        accent="#4BE1D2",
-        panel="#09131A",
-        dim="#7395A1",
-        scan_strength=1.36,
+    "binary_eclipse": ThemePreset(
+        bg="#02050A",
+        fg="#DCE8F8",
+        accent="#5CE3FF",
+        panel="#0A121D",
+        dim="#7F97BB",
+        secondary="#1A3453",
+        style="grid",
+        font_family="consolas",
+        scan_strength=1.34,
         glow_strength=1.32,
-        particle_strength=1.28,
+        particle_strength=1.22,
+        unlock_achievement="daily_dual_clear",
+    ),
+    "ghost_echo": ThemePreset(
+        bg="#03070A",
+        fg="#C9EFF4",
+        accent="#59EAD8",
+        panel="#09141A",
+        dim="#77A0AA",
+        secondary="#194236",
+        style="blueprint",
+        font_family="couriernew",
+        scan_strength=1.36,
+        glow_strength=1.36,
+        particle_strength=1.3,
         unlock_achievement="secret_echo",
     ),
 }
@@ -230,6 +310,9 @@ class GethesApp:
         self.cloud_last_message = ""
         self.cloud_last_presence: dict[str, object] = {}
         self.cloud_last_sync_at = 0.0
+        self.daily_active_game = ""
+        self.daily_active_date = ""
+        self.daily_active_seed = 0
         self.update_check_running = False
         self.update_install_running = False
         self.update_install_after_check = False
@@ -345,9 +428,11 @@ class GethesApp:
 
     def set_input_handler(self, handler: Callable[[str], None]) -> None:
         self.input_handler = handler
+        self.ui.clear_action_buttons()
 
     def clear_input_handler(self) -> None:
         self.input_handler = None
+        self.ui.clear_action_buttons()
 
     def on_story_progress(self, page: int, total: int, title: str) -> None:
         self.current_slot.story_page = max(0, page)
@@ -459,6 +544,44 @@ class GethesApp:
         self.bump_stat("snake_games", 1)
         if not user_exit and not game_over and score >= 120:
             self._unlock_achievement("snake_score_120")
+
+        if self.daily_active_game == "snake" and self.daily_active_date:
+            key_best = self._daily_stat_key(self.daily_active_date, "snake", "best_score")
+            previous_best = self.get_stat(key_best, 0)
+            self.set_stat_max(key_best, score)
+            best_now = self.get_stat(key_best, 0)
+            self.ui.write(self.tr("app.daily.snake_result", score=score, best=best_now))
+            if score > previous_best:
+                self.ui.push_notification(
+                    self.tr("app.daily.toast.title"),
+                    self.tr("app.daily.toast.snake", score=score),
+                    icon_key="mdi:trophy-outline",
+                )
+            first_completion, game_streak, overall_streak, dual_ready = self._mark_daily_completion(
+                "snake",
+                self.daily_active_date,
+            )
+            self.ui.write(
+                self.tr(
+                    "app.daily.progress",
+                    game="snake",
+                    game_streak=game_streak,
+                    overall_streak=overall_streak,
+                )
+            )
+            if first_completion:
+                self._unlock_achievement("daily_first_win")
+                if overall_streak >= 3:
+                    self._unlock_achievement("daily_streak_3")
+                if dual_ready:
+                    self._unlock_achievement("daily_dual_clear")
+                    self.ui.push_notification(
+                        self.tr("app.daily.toast.title"),
+                        self.tr("app.daily.toast.dual"),
+                        icon_key="mdi:trophy-outline",
+                    )
+        if self.daily_active_game == "snake":
+            self._clear_daily_session()
         self._save_current_slot(user_feedback=False)
 
     def on_hangman_finished(self, won: bool, mode: str, errors: int, hint_used: bool) -> None:
@@ -514,6 +637,8 @@ class GethesApp:
         gold: int,
     ) -> None:
         if cancelled:
+            if self.daily_active_game == "rogue":
+                self._clear_daily_session()
             return
         self.bump_stat("rogue_runs", 1)
         self._unlock_achievement("rogue_first_run")
@@ -525,6 +650,56 @@ class GethesApp:
         self.set_stat_max("rogue_best_depth", depth)
         self.set_stat_max("rogue_best_gold", gold)
         self.set_stat_max("rogue_best_kills", kills)
+
+        if self.daily_active_game == "rogue" and self.daily_active_date:
+            key_depth = self._daily_stat_key(self.daily_active_date, "rogue", "best_depth")
+            key_gold = self._daily_stat_key(self.daily_active_date, "rogue", "best_gold")
+            prev_depth = self.get_stat(key_depth, 0)
+            prev_gold = self.get_stat(key_gold, 0)
+            self.set_stat_max(key_depth, depth)
+            self.set_stat_max(key_gold, gold)
+            best_depth = self.get_stat(key_depth, 0)
+            best_gold = self.get_stat(key_gold, 0)
+            self.ui.write(
+                self.tr(
+                    "app.daily.rogue_result",
+                    depth=depth,
+                    gold=gold,
+                    best_depth=best_depth,
+                    best_gold=best_gold,
+                )
+            )
+            if depth > prev_depth or gold > prev_gold:
+                self.ui.push_notification(
+                    self.tr("app.daily.toast.title"),
+                    self.tr("app.daily.toast.rogue", depth=best_depth, gold=best_gold),
+                    icon_key="mdi:trophy-outline",
+                )
+            first_completion, game_streak, overall_streak, dual_ready = self._mark_daily_completion(
+                "rogue",
+                self.daily_active_date,
+            )
+            self.ui.write(
+                self.tr(
+                    "app.daily.progress",
+                    game="rogue",
+                    game_streak=game_streak,
+                    overall_streak=overall_streak,
+                )
+            )
+            if first_completion:
+                self._unlock_achievement("daily_first_win")
+                if overall_streak >= 3:
+                    self._unlock_achievement("daily_streak_3")
+                if dual_ready:
+                    self._unlock_achievement("daily_dual_clear")
+                    self.ui.push_notification(
+                        self.tr("app.daily.toast.title"),
+                        self.tr("app.daily.toast.dual"),
+                        icon_key="mdi:trophy-outline",
+                    )
+        if self.daily_active_game == "rogue":
+            self._clear_daily_session()
         self._save_current_slot(user_feedback=False)
 
     def _migrate_legacy_theme(self) -> None:
@@ -537,36 +712,44 @@ class GethesApp:
             self.config.theme_accent_color = theme.accent
             self.config.theme_panel_color = theme.panel
             self.config.theme_dim_color = theme.dim
+            self.config.theme_secondary_color = theme.secondary
+            self.config.theme_style = theme.style
             self.config.theme_scan_strength = theme.scan_strength
             self.config.theme_glow_strength = theme.glow_strength
             self.config.theme_particles_strength = theme.particle_strength
 
     def _sync_theme_visual_profile(self) -> None:
-        if self.config.theme_accent_color.strip():
-            return
-        if self.config.theme_panel_color.strip():
-            return
-        if self.config.theme_dim_color.strip():
-            return
-        if (
-            abs(float(self.config.theme_scan_strength) - 1.0) > 0.001
-            or abs(float(self.config.theme_glow_strength) - 1.0) > 0.001
-            or abs(float(self.config.theme_particles_strength) - 1.0) > 0.001
-        ):
+        theme_name = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
+        preset = self.theme_presets.get(theme_name)
+        if preset is None:
+            for candidate in self.theme_presets.values():
+                if (
+                    candidate.bg.lower() == self.config.bg_color.lower()
+                    and candidate.fg.lower() == self.config.fg_color.lower()
+                ):
+                    preset = candidate
+                    break
+        if preset is None:
             return
 
-        for preset in self.theme_presets.values():
-            if (
-                preset.bg.lower() == self.config.bg_color.lower()
-                and preset.fg.lower() == self.config.fg_color.lower()
-            ):
-                self.config.theme_accent_color = preset.accent
-                self.config.theme_panel_color = preset.panel
-                self.config.theme_dim_color = preset.dim
-                self.config.theme_scan_strength = preset.scan_strength
-                self.config.theme_glow_strength = preset.glow_strength
-                self.config.theme_particles_strength = preset.particle_strength
-                return
+        if not self.config.theme_accent_color.strip():
+            self.config.theme_accent_color = preset.accent
+        if not self.config.theme_panel_color.strip():
+            self.config.theme_panel_color = preset.panel
+        if not self.config.theme_dim_color.strip():
+            self.config.theme_dim_color = preset.dim
+        if (
+            abs(float(self.config.theme_scan_strength) - 1.0) <= 0.001
+            and abs(float(self.config.theme_glow_strength) - 1.0) <= 0.001
+            and abs(float(self.config.theme_particles_strength) - 1.0) <= 0.001
+        ):
+            self.config.theme_scan_strength = preset.scan_strength
+            self.config.theme_glow_strength = preset.glow_strength
+            self.config.theme_particles_strength = preset.particle_strength
+        if not self.config.theme_secondary_color.strip():
+            self.config.theme_secondary_color = preset.secondary
+        if self._normalize_theme_style(self.config.theme_style) not in THEME_STYLE_MODES:
+            self.config.theme_style = preset.style
 
     def _load_words(self) -> list[str]:
         words_file = self.data_dir / "words.txt"
@@ -609,10 +792,10 @@ class GethesApp:
                             "",
                             "Theme mod format (single):",
                             '  {"name":"nocturne","bg":"#05070B","fg":"#C3CEDA"}',
-                            "  Optional: accent/panel/dim + fx scan/glow/particles + unlock_achievement",
+                            "  Optional: accent/panel/dim/secondary + style + font_family + fx scan/glow/particles + unlock_achievement",
                             "",
                             "Theme mod format (pack):",
-                            '  {"themes":{"nocturne":{"bg":"#05070B","fg":"#C3CEDA","accent":"#6CB7E8","fx":{"scan":1.1,"glow":0.9,"particles":0.8},"unlock_achievement":"codebreaker_win"}}}',
+                            '  {"themes":{"nocturne":{"bg":"#05070B","fg":"#C3CEDA","accent":"#6CB7E8","secondary":"#1A2438","style":"split_v","font_family":"consolas","fx":{"scan":1.1,"glow":0.9,"particles":0.8},"unlock_achievement":"codebreaker_win"}}}',
                         ]
                     ),
                     encoding="utf-8",
@@ -631,12 +814,17 @@ class GethesApp:
                                     "bg": "#05070B",
                                     "fg": "#C3CEDA",
                                     "accent": "#7AA8D9",
+                                    "secondary": "#1A2438",
+                                    "style": "split_v",
+                                    "font_family": "consolas",
                                     "fx": {"scan": 1.0, "glow": 0.9, "particles": 0.8},
                                 },
                                 "bloodmoon": {
                                     "bg": "#10060A",
                                     "fg": "#F0B7C1",
                                     "accent": "#FF5A7A",
+                                    "secondary": "#2D1220",
+                                    "style": "split_h",
                                     "fx": {"scan": 1.2, "glow": 1.2, "particles": 0.9},
                                     "unlock_achievement": "hangman_win",
                                 },
@@ -644,6 +832,8 @@ class GethesApp:
                                     "bg": "#070B0D",
                                     "fg": "#D2E1E8",
                                     "accent": "#7AD0F2",
+                                    "secondary": "#153041",
+                                    "style": "grid",
                                     "fx": {"scan": 0.85, "glow": 1.0, "particles": 0.7},
                                 },
                             }
@@ -690,6 +880,24 @@ class GethesApp:
             return max(0.2, min(2.0, float(value)))
         return default
 
+    @staticmethod
+    def _normalize_theme_style(value: object) -> str:
+        if not isinstance(value, str):
+            return ""
+        token = value.strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "splitv": "split_v",
+            "split_vertical": "split_v",
+            "splith": "split_h",
+            "split_horizontal": "split_h",
+            "diag": "diagonal",
+            "neo": "terminal",
+        }
+        normalized = aliases.get(token, token)
+        if normalized not in THEME_STYLE_MODES:
+            return ""
+        return normalized
+
     def _parse_theme_preset(self, payload: object) -> ThemePreset | None:
         if not isinstance(payload, dict):
             return None
@@ -707,6 +915,19 @@ class GethesApp:
         accent = payload.get("accent")
         panel = payload.get("panel")
         dim = payload.get("dim")
+        secondary = payload.get("secondary")
+        if not isinstance(secondary, str):
+            secondary = payload.get("secondary_color")
+        style = self._normalize_theme_style(payload.get("style"))
+        if not style:
+            style = self._normalize_theme_style(payload.get("theme_style"))
+        if not style:
+            style = "terminal"
+        font_family = payload.get("font_family")
+        if not isinstance(font_family, str):
+            font_family = payload.get("font")
+        if not isinstance(font_family, str):
+            font_family = ""
         unlock = payload.get("unlock_achievement")
         if not isinstance(unlock, str):
             unlock = ""
@@ -717,6 +938,9 @@ class GethesApp:
             accent=(accent.strip() if isinstance(accent, str) else ""),
             panel=(panel.strip() if isinstance(panel, str) else ""),
             dim=(dim.strip() if isinstance(dim, str) else ""),
+            secondary=(secondary.strip() if isinstance(secondary, str) else ""),
+            style=style,
+            font_family=font_family.strip(),
             scan_strength=self._clamp_theme_strength(
                 fx.get("scan", payload.get("scan_strength", payload.get("scan", 1.0))),
                 default=1.0,
@@ -761,6 +985,8 @@ class GethesApp:
                 if theme.panel and not self.ui.is_valid_color(theme.panel):
                     continue
                 if theme.dim and not self.ui.is_valid_color(theme.dim):
+                    continue
+                if theme.secondary and not self.ui.is_valid_color(theme.secondary):
                     continue
                 presets[normalized] = theme
 
@@ -922,6 +1148,7 @@ class GethesApp:
             return
 
         if cmd == "snake":
+            self._clear_daily_session()
             self.snake.start()
             return
 
@@ -950,7 +1177,12 @@ class GethesApp:
             return
 
         if cmd in {"roguelike", "rogelike", "rogue", "dungeon"}:
+            self._clear_daily_session()
             self.roguelike.start()
+            return
+
+        if cmd in {"daily", "reto", "desafio"}:
+            self._handle_daily(args)
             return
 
         if cmd in {"opciones", "options", "opcoes"}:
@@ -1104,6 +1336,9 @@ class GethesApp:
             "rogelike",
             "rogue",
             "dungeon",
+            "daily",
+            "reto",
+            "desafio",
             "opciones",
             "options",
             "opcoes",
@@ -1905,6 +2140,143 @@ class GethesApp:
         )
         self._queue_cloud_sync(reason="player_updated", force=True)
 
+    @staticmethod
+    def _today_key() -> str:
+        return time.strftime("%Y%m%d", time.localtime())
+
+    @staticmethod
+    def _daily_seed(game: str, date_key: str) -> int:
+        token = f"gethes-daily:{date_key}:{game}:v1"
+        value = 0
+        for ch in token:
+            value = ((value * 131) + ord(ch)) & 0xFFFFFFFF
+        return value
+
+    @staticmethod
+    def _daily_stat_key(date_key: str, game: str, metric: str) -> str:
+        return f"daily_{date_key}_{game}_{metric}"
+
+    def _advance_daily_streak(self, scope: str, date_key: str) -> int:
+        date_int = normalize_date_key(date_key)
+        if date_int <= 0:
+            return self.get_stat(f"daily_streak_{scope}", 0)
+        last_key = f"daily_last_{scope}_date"
+        streak_key = f"daily_streak_{scope}"
+        previous_date = self.get_stat(last_key, 0)
+        previous_streak = self.get_stat(streak_key, 0)
+        new_streak = next_daily_streak(previous_date, date_int, previous_streak)
+        self.set_stat(last_key, date_int)
+        self.set_stat(streak_key, new_streak)
+        return new_streak
+
+    def _is_daily_game_completed(self, date_key: str, game: str) -> bool:
+        return self.get_stat(self._daily_stat_key(date_key, game, "completed"), 0) > 0
+
+    def _mark_daily_completion(self, game: str, date_key: str) -> tuple[bool, int, int, bool]:
+        game_done_key = self._daily_stat_key(date_key, game, "completed")
+        if self.get_stat(game_done_key, 0) > 0:
+            game_streak = self.get_stat(f"daily_streak_{game}", 0)
+            overall_streak = self.get_stat("daily_streak_any", 0)
+            dual_ready = self._is_daily_game_completed(date_key, "snake") and self._is_daily_game_completed(
+                date_key,
+                "rogue",
+            )
+            return False, game_streak, overall_streak, dual_ready
+
+        self.set_stat(game_done_key, 1)
+        self.bump_stat("daily_completed_total", 1)
+        game_streak = self._advance_daily_streak(game, date_key)
+
+        any_done_key = self._daily_stat_key(date_key, "any", "completed")
+        if self.get_stat(any_done_key, 0) > 0:
+            overall_streak = self.get_stat("daily_streak_any", 0)
+        else:
+            self.set_stat(any_done_key, 1)
+            overall_streak = self._advance_daily_streak("any", date_key)
+
+        dual_ready = self._is_daily_game_completed(date_key, "snake") and self._is_daily_game_completed(
+            date_key,
+            "rogue",
+        )
+        return True, game_streak, overall_streak, dual_ready
+
+    def _clear_daily_session(self) -> None:
+        self.daily_active_game = ""
+        self.daily_active_date = ""
+        self.daily_active_seed = 0
+
+    def _start_daily_challenge(self, game: str) -> None:
+        date_key = self._today_key()
+        seed = self._daily_seed(game, date_key)
+        self.daily_active_game = game
+        self.daily_active_date = date_key
+        self.daily_active_seed = seed
+        self.ui.write(self.tr("app.daily.start", game=game, seed=seed, date=date_key))
+
+        if game == "snake":
+            self.snake.start(seed=seed)
+            return
+        if game == "rogue":
+            self.roguelike.start(seed=seed)
+            return
+        self._clear_daily_session()
+
+    def _show_daily_status(self) -> None:
+        date_key = self._today_key()
+        snake_seed = self._daily_seed("snake", date_key)
+        rogue_seed = self._daily_seed("rogue", date_key)
+        snake_best = self.get_stat(self._daily_stat_key(date_key, "snake", "best_score"), 0)
+        rogue_best_depth = self.get_stat(self._daily_stat_key(date_key, "rogue", "best_depth"), 0)
+        rogue_best_gold = self.get_stat(self._daily_stat_key(date_key, "rogue", "best_gold"), 0)
+
+        self.ui.write(self.tr("app.daily.title", date=date_key))
+        self.ui.write(self.tr("app.daily.snake_status", seed=snake_seed, best=snake_best))
+        self.ui.write(
+            self.tr(
+                "app.daily.rogue_status",
+                seed=rogue_seed,
+                depth=rogue_best_depth,
+                gold=rogue_best_gold,
+            )
+        )
+        snake_done = "OK" if self._is_daily_game_completed(date_key, "snake") else "--"
+        rogue_done = "OK" if self._is_daily_game_completed(date_key, "rogue") else "--"
+        self.ui.write(self.tr("app.daily.completed", snake=snake_done, rogue=rogue_done))
+        self.ui.write(
+            self.tr(
+                "app.daily.streaks",
+                overall=self.get_stat("daily_streak_any", 0),
+                snake=self.get_stat("daily_streak_snake", 0),
+                rogue=self.get_stat("daily_streak_rogue", 0),
+            )
+        )
+        if self.daily_active_game:
+            self.ui.write(
+                self.tr(
+                    "app.daily.active",
+                    game=self.daily_active_game,
+                    seed=self.daily_active_seed,
+                )
+            )
+
+    def _handle_daily(self, args: list[str]) -> None:
+        action = args[0].strip().lower() if args else "status"
+
+        if action in {"status", "state", "info"}:
+            self._show_daily_status()
+            self.ui.write(self.tr("app.daily.usage"))
+            return
+
+        if action in {"snake", "s"}:
+            self._start_daily_challenge("snake")
+            return
+
+        if action in {"rogue", "roguelike", "dungeon", "r"}:
+            self._start_daily_challenge("rogue")
+            return
+
+        self.ui.write(self.tr("app.daily.usage"))
+
     def _handle_cloud(self, args: list[str]) -> None:
         action = args[0].strip().lower() if args else "status"
 
@@ -2025,6 +2397,8 @@ class GethesApp:
                 "rogue_best_kills": self.get_stat("rogue_best_kills"),
                 "rogue_runs": self.get_stat("rogue_runs"),
                 "rogue_wins": self.get_stat("rogue_wins"),
+                "daily_completed_total": self.get_stat("daily_completed_total"),
+                "daily_streak_any": self.get_stat("daily_streak_any"),
             },
             "preferences": {
                 "language_mode": self.config.language,
@@ -2236,6 +2610,8 @@ class GethesApp:
         self.config.theme_accent_color = ""
         self.config.theme_panel_color = ""
         self.config.theme_dim_color = ""
+        self.config.theme_secondary_color = ""
+        self.config.theme_style = ""
         self.config.theme_scan_strength = 1.0
         self.config.theme_glow_strength = 1.0
         self.config.theme_particles_strength = 1.0
@@ -2246,9 +2622,15 @@ class GethesApp:
         self.config.theme_accent_color = theme.accent
         self.config.theme_panel_color = theme.panel
         self.config.theme_dim_color = theme.dim
+        self.config.theme_secondary_color = theme.secondary
+        self.config.theme_style = self._normalize_theme_style(theme.style) or "terminal"
         self.config.theme_scan_strength = theme.scan_strength
         self.config.theme_glow_strength = theme.glow_strength
         self.config.theme_particles_strength = theme.particle_strength
+        if theme.font_family.strip():
+            resolved = self._resolve_font_family(theme.font_family)
+            if resolved is not None:
+                self.config.font_family = resolved
         self._apply_visual_config()
         self._save_config()
         self.ui.write(self.tr("app.theme_preset_applied", name=name))
@@ -2357,6 +2739,9 @@ class GethesApp:
                 self.tr(
                     "app.theme_list_fx",
                     accent=(preset.accent or "auto"),
+                    secondary=(preset.secondary or "auto"),
+                    style=(preset.style or "terminal"),
+                    font=(preset.font_family or "-"),
                     scan=f"{preset.scan_strength:.2f}",
                     glow=f"{preset.glow_strength:.2f}",
                     particles=f"{preset.particle_strength:.2f}",
@@ -2368,6 +2753,8 @@ class GethesApp:
         cfg_accent = self.config.theme_accent_color.strip().lower()
         cfg_panel = self.config.theme_panel_color.strip().lower()
         cfg_dim = self.config.theme_dim_color.strip().lower()
+        cfg_secondary = self.config.theme_secondary_color.strip().lower()
+        cfg_style = self._normalize_theme_style(self.config.theme_style)
         for name, preset in self.theme_presets.items():
             if preset.bg.lower() != bg.lower() or preset.fg.lower() != fg.lower():
                 continue
@@ -2376,6 +2763,11 @@ class GethesApp:
             if preset.panel.strip().lower() != cfg_panel:
                 continue
             if preset.dim.strip().lower() != cfg_dim:
+                continue
+            if cfg_secondary and preset.secondary.strip().lower() != cfg_secondary:
+                continue
+            preset_style = self._normalize_theme_style(preset.style) or "terminal"
+            if cfg_style and preset_style != cfg_style:
                 continue
             if abs(float(preset.scan_strength) - float(self.config.theme_scan_strength)) > 0.001:
                 continue
@@ -3388,6 +3780,18 @@ class GethesApp:
         self.audio.set_enabled(self.config.sound)
 
     def _apply_visual_config(self) -> None:
+        active_theme_name = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
+        active_preset = self.theme_presets.get(active_theme_name)
+        secondary_color = self.config.theme_secondary_color.strip()
+        theme_style = self._normalize_theme_style(self.config.theme_style)
+        if active_preset is not None:
+            if not secondary_color and active_preset.secondary.strip():
+                secondary_color = active_preset.secondary.strip()
+            if not theme_style:
+                theme_style = self._normalize_theme_style(active_preset.style) or "terminal"
+        if not theme_style:
+            theme_style = "terminal"
+
         try:
             self.ui.apply_style(
                 bg_color=self.config.bg_color,
@@ -3398,12 +3802,16 @@ class GethesApp:
                 accent_color=(self.config.theme_accent_color or None),
                 panel_color=(self.config.theme_panel_color or None),
                 dim_color=(self.config.theme_dim_color or None),
+                secondary_color=(secondary_color or None),
+                theme_style=theme_style,
                 scan_strength=self.config.theme_scan_strength,
                 glow_strength=self.config.theme_glow_strength,
                 particle_strength=self.config.theme_particles_strength,
             )
         except Exception:
             self.config = GameConfig()
+            secondary_color = ""
+            theme_style = "terminal"
             self.ui.apply_style(
                 bg_color=self.config.bg_color,
                 fg_color=self.config.fg_color,
@@ -3413,6 +3821,8 @@ class GethesApp:
                 accent_color=(self.config.theme_accent_color or None),
                 panel_color=(self.config.theme_panel_color or None),
                 dim_color=(self.config.theme_dim_color or None),
+                secondary_color=(secondary_color or None),
+                theme_style=theme_style,
                 scan_strength=self.config.theme_scan_strength,
                 glow_strength=self.config.theme_glow_strength,
                 particle_strength=self.config.theme_particles_strength,
@@ -3645,7 +4055,15 @@ class GethesApp:
             ]
         )
 
+    @staticmethod
+    def _language_mode_labels() -> str:
+        preferred = ["auto", "es", "en", "pt", "fr", "de"]
+        ordered = [item for item in preferred if item in LANGUAGE_MODES]
+        ordered.extend(sorted(item for item in LANGUAGE_MODES if item not in ordered))
+        return "|".join(ordered)
+
     def _help_text(self) -> str:
+        language_modes = self._language_mode_labels()
         lines = [
             self.tr("app.help.title"),
             f"- help                     : {self.tr('app.help.help')}",
@@ -3658,6 +4076,7 @@ class GethesApp:
             f"- codigo / codebreaker     : {self.tr('app.help.codebreaker')}",
             f"- physics                  : {self.tr('app.help.physics')}",
             f"- roguelike / rogue        : {self.tr('app.help.roguelike')}",
+            f"- daily [snake|rogue]      : {self.tr('app.help.daily')}",
             f"- historia / story         : {self.tr('app.help.story')}",
             f"- logros / achievements    : {self.tr('app.help.achievements')}",
             f"- slots                    : {self.tr('app.help.slots')}",
@@ -3675,7 +4094,7 @@ class GethesApp:
             f"- fg <color>               : {self.tr('app.help.fg')}",
             f"- font <familia> [tamano]  : {self.tr('app.help.font')}",
             f"- fonts [filtro]           : {self.tr('app.help.fonts')}",
-            f"- lang [auto|es|en|pt]     : {self.tr('app.help.lang')}",
+            f"- lang [{language_modes}]  : {self.tr('app.help.lang')}",
             f"- update ...               : {self.tr('app.help.update')}",
             f"- assets <status|reload>   : {self.tr('app.help.assets')}",
             f"- mods <status|reload>     : {self.tr('app.help.mods')}",
@@ -3693,6 +4112,8 @@ class GethesApp:
     def _options_text(self) -> str:
         active_theme = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
         theme_value = active_theme if active_theme != "custom" else self.tr("app.theme_custom")
+        theme_style = self._normalize_theme_style(self.config.theme_style) or "terminal"
+        theme_secondary = self.config.theme_secondary_color or "auto"
         remote_state = "ON" if self.syster.has_remote_endpoint() else "OFF"
         ui_user, ui_responsive, ui_effective = self.ui.get_scale_snapshot()
         return "\n".join(
@@ -3709,6 +4130,8 @@ class GethesApp:
                 f"- {self.tr('app.options.graphics'):13}: {self.config.graphics}",
                 f"- {self.tr('app.options.fps'):13}: {self.ui.get_target_fps()}",
                 f"- {self.tr('app.options.theme'):13}: {theme_value}",
+                f"- {self.tr('app.options.theme_style'):13}: {theme_style}",
+                f"- {self.tr('app.options.theme_secondary'):13}: {theme_secondary}",
                 f"- {self.tr('app.options.theme_fx'):13}: "
                 f"scan {self.config.theme_scan_strength:.2f} | "
                 f"glow {self.config.theme_glow_strength:.2f} | "
