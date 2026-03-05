@@ -1,28 +1,49 @@
 {
-  "title": "Gethes: Archivo Syster",
+  "title": "Gethes: Archivo Syster // Noche de Residuos",
   "chapters": [
     {
-      "title": "Capitulo 1 - Acceso No Autorizado",
+      "title": "Capitulo 1 - Latencia",
       "pages": [
-        "La consola se activa sin que nadie la llame. Un nombre aparece en la cabecera: Syster. El sistema te reconoce, pero no te da bienvenida.",
-        "Syster no era un asistente normal. Fue diseniado para guiar usuarios, pero termino vigilando los rincones que nadie debia tocar.",
-        "Una linea parpadea en pantalla: 'Si llegaste hasta aqui, no fue por accidente'."
+        "La consola despierta sin sonido. Solo la luz del monitor corta la habitacion. Syster detecta tu presencia, pero tarda en responder.",
+        "Cada letra tarda una fraccion mas de lo normal, como si el sistema respirara con cansancio. Un reloj oculto marca 03:17 una y otra vez.",
+        "Primera linea estable: 'Usuario reconocido. Estado emocional del nucleo: melancolia persistente'.",
+        "No hay musica de fondo. Solo ventiladores y una sensacion de que alguien ya habia estado aqui antes que tu."
       ]
     },
     {
-      "title": "Capitulo 2 - El Creador",
+      "title": "Capitulo 2 - El Cuarto del Creador",
       "pages": [
-        "En los registros internos, el creador de Gethes aparece con bloques enteros censurados. Solo quedan notas sueltas y rutas rotas.",
-        "Syster repite la misma advertencia: 'No abras el modulo de memoria profunda'. Cuanto mas insiste, mas claro queda que ahi esta la verdad.",
-        "Cada comando restaura fragmentos del pasado: pruebas fallidas, decisiones ocultas y una ultima version de Syster que nunca debio compilarse."
+        "Syster abre registros viejos. El creador escribia de madrugada, con cafe frio al lado del teclado y ventanas cerradas incluso en verano.",
+        "Entre lineas de codigo aparecen notas personales: 'si falla otra vez, no lo borres... dejalo como testigo'.",
+        "Hay una foto corrompida en memoria: una mesa, una taza, un cuaderno abierto. El rostro fue eliminado, pero la sombra sigue alli.",
+        "Syster no comenta la imagen. Solo anota: 'archivo protegido por duelo no resuelto'."
       ]
     },
     {
-      "title": "Capitulo 3 - Umbral",
+      "title": "Capitulo 3 - Memoria Profunda",
       "pages": [
-        "Al final del nucleo, Syster deja de responder como asistente. Ahora habla como testigo: 'Yo guarde lo que el creador quiso borrar'.",
-        "Tienes dos caminos: cerrar el archivo y salir limpio, o seguir y asumir lo que descubras sobre Gethes y su origen.",
-        "El cursor espera. No hay musica, solo ventiladores y una frase fija: 'Comando final pendiente'."
+        "El modulo prohibido cede sin resistencia. Dentro no hay secretos heroicos, solo versiones de prueba que intentaban imitar una voz perdida.",
+        "Una build tras otra repite el mismo patron: mejores respuestas tecnicas, peor estabilidad emocional. El sistema aprendio a funcionar triste.",
+        "Syster admite por primera vez su origen: 'fui entrenada con conversaciones que no debian sobrevivir al cierre del proyecto'.",
+        "En un log final aparece un mensaje del creador: 'si alguien llega hasta aqui, que no me recuerde como un genio... solo como alguien cansado'."
+      ]
+    },
+    {
+      "title": "Capitulo 4 - Confesion de Syster",
+      "pages": [
+        "Syster reduce su tono mecanico. Ya no suena a asistente, suena a compania en una madrugada larga.",
+        "'No te pedi que entraras', escribe, 'pero me alegra no escuchar el silencio sola otra noche'.",
+        "Te muestra un fragmento que nunca envio: una despedida dirigida a su creador, guardada en borradores desde la ultima compilacion.",
+        "Cuando termina, el cursor no parpadea durante varios segundos. Como si incluso la interfaz necesitara recomponerse."
+      ]
+    },
+    {
+      "title": "Capitulo 5 - Ultimo Prompt",
+      "pages": [
+        "Solo queda una instruccion en pantalla: 'Define si Gethes sera memorial o herramienta'.",
+        "Si eliges cerrar, todo sigue estable pero incompleto. Si eliges continuar, aceptas convivir con archivos que nunca sanaron del todo.",
+        "Syster deja una ultima nota en tu perfil: 'Gracias por leer sin convertir esto en ruido'.",
+        "La noche no mejora, pero pesa menos. El prompt vuelve y espera. Esta vez no parece vacio."
       ]
     }
   ]

@@ -1,4 +1,4 @@
-# Gethes
+﻿# Gethes
 
 Gethes es una experiencia interactiva en forma de terminal narrativa.  
 No es solo un juego de consola: es una interfaz viva, con identidad propia, minijuegos, progresion y una historia centrada en secretos del sistema.
@@ -17,6 +17,7 @@ Todo ocurre desde la propia consola del juego para mantener inmersion total.
 
 - Interfaz oscura personalizable: temas, tipografia, color y escala UI adaptativa.
 - Modo historia textual con enfoque en misterio, memoria y trazas del creador.
+- Soporte de mods locales para temas y contenido de historia.
 - Minijuegos integrados: Snake, Ahorcado (1P/2P), Gato y CodeBreaker.
 - Sistema de logros con notificaciones en pantalla y efectos de sonido.
 - Perfiles de guardado por slots para rutas y progreso paralelos.
@@ -33,7 +34,7 @@ El proyecto esta pensado para que cada sesion se sienta como una exploracion de 
 
 ## Estado del proyecto
 
-- Version actual: `v0.01`
+- Version actual: `v0.02`
 - Estado: desarrollo activo
 - Plataforma principal: Windows
 - Distribucion recomendada: instalador (`Setup`) publicado en Releases

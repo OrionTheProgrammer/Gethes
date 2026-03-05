@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 import json
@@ -99,7 +99,7 @@ class UpdateManager:
             update.installer_url,
             headers={
                 "Accept": "application/octet-stream",
-                "User-Agent": "Gethes-Updater/0.01",
+                "User-Agent": "Gethes-Updater/0.02",
             },
             method="GET",
         )
@@ -165,7 +165,7 @@ class UpdateManager:
             url,
             headers={
                 "Accept": "application/vnd.github+json",
-                "User-Agent": "Gethes-Updater/0.01",
+                "User-Agent": "Gethes-Updater/0.02",
             },
             method="GET",
         )

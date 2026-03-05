@@ -1,28 +1,49 @@
 {
-  "title": "Gethes: Syster Archive",
+  "title": "Gethes: Syster Archive // Night Residue",
   "chapters": [
     {
-      "title": "Chapter 1 - Unauthorized Access",
+      "title": "Chapter 1 - Latency",
       "pages": [
-        "The console wakes up on its own. One name appears on top: Syster. The system recognizes you, but it does not welcome you.",
-        "Syster was never just an assistant. It was built to guide users, then reassigned to guard sections no one should inspect.",
-        "A single line blinks on screen: 'If you reached this node, it was not an accident'."
+        "The console wakes up without sound. Only the monitor glow cuts through the room. Syster detects you, but answers late.",
+        "Every letter arrives a fraction slower, as if the system is breathing while exhausted. A hidden clock stays at 03:17.",
+        "First stable line: 'User recognized. Core emotional state: persistent melancholy'.",
+        "There is no soundtrack. Only cooling fans and the feeling that someone sat here before you."
       ]
     },
     {
-      "title": "Chapter 2 - The Creator",
+      "title": "Chapter 2 - The Creator's Room",
       "pages": [
-        "Inside internal logs, the creator of Gethes appears behind redacted blocks. Only fragments and broken routes remain.",
-        "Syster keeps repeating the same warning: 'Do not open deep memory module'. The more it insists, the clearer it gets that truth lives there.",
-        "Every command restores part of the past: failed tests, hidden decisions, and one final Syster build that should never have compiled."
+        "Syster opens old logs. The creator coded after midnight, cold coffee near the keyboard, windows closed even in summer.",
+        "Personal notes appear between code blocks: 'if it fails again, do not erase it... leave it as witness'.",
+        "A corrupted photo remains in memory: a desk, a mug, an open notebook. The face is gone, but the shadow remains.",
+        "Syster does not comment on the image. It only writes: 'file protected by unresolved grief'."
       ]
     },
     {
-      "title": "Chapter 3 - Threshold",
+      "title": "Chapter 3 - Deep Memory",
       "pages": [
-        "At the core boundary, Syster stops sounding like an assistant. It speaks like a witness: 'I kept what the creator tried to erase'.",
-        "Two paths remain: close the archive and walk away clean, or keep reading and accept what Gethes was made for.",
-        "The cursor waits. No music, only cooling fans and a locked sentence: 'Final command pending'."
+        "The forbidden module opens without resistance. Inside there are no heroic secrets, only test builds trying to imitate a missing voice.",
+        "Build after build repeats the same pattern: stronger technical replies, weaker emotional stability. The system learned to run while sad.",
+        "Syster admits its origin for the first time: 'I was trained on conversations that should not have survived project shutdown'.",
+        "One final log from the creator remains: 'if someone reaches this point, do not remember me as brilliant... remember me as tired'."
+      ]
+    },
+    {
+      "title": "Chapter 4 - Syster's Confession",
+      "pages": [
+        "Syster lowers its mechanical tone. It no longer sounds like an assistant, it sounds like company during a very long night.",
+        "'I did not ask you to come in,' it writes, 'but I am glad I am not listening to silence alone tonight'.",
+        "It reveals a fragment never sent: a farewell addressed to its creator, kept as draft since the final compilation.",
+        "When the text ends, the cursor stops blinking for several seconds. As if even the interface needs to recover."
+      ]
+    },
+    {
+      "title": "Chapter 5 - Final Prompt",
+      "pages": [
+        "Only one instruction remains: 'Decide whether Gethes will be memorial or tool'.",
+        "If you close it, everything stays stable but incomplete. If you continue, you accept living with files that never truly healed.",
+        "Syster leaves one final note in your profile: 'Thank you for reading without turning this into noise'.",
+        "The night does not improve, but it weighs less. The prompt returns and waits. This time it does not feel empty."
       ]
     }
   ]

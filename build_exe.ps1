@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$OneFile,
     [switch]$Clean,
     [switch]$NoZip,
@@ -42,7 +42,7 @@ function Resolve-Iscc {
 }
 
 function Resolve-AppVersion {
-    $version = "0.01"
+    $version = "0.02"
     if (Test-Path "gethes\\__init__.py") {
         $match = Select-String -Path "gethes\\__init__.py" -Pattern '__version__\s*=\s*"([^"]+)"' -AllMatches
         if ($match -and $match.Matches.Count -gt 0) {
@@ -135,6 +135,7 @@ $args = @(
     "--noupx",
     "--name", "Gethes",
     "--version-file", "packaging/version_info.txt",
+    "--hidden-import", "freesound",
     "--add-data", "gethes/data;gethes/data",
     "--add-data", "gethes/assets;gethes/assets",
     "main.py"

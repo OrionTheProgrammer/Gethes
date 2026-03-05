@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -221,7 +221,7 @@ class SysterAssistant:
             "context": asdict(context),
             "memory": self._memory_payload(),
             "agent": "Syster",
-            "version": "0.01",
+            "version": "0.02",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
@@ -230,7 +230,7 @@ class SysterAssistant:
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/plain",
-                "User-Agent": "Gethes-Syster/0.01",
+                "User-Agent": "Gethes-Syster/0.02",
             },
             method="POST",
         )

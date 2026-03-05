@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import shlex
@@ -17,6 +18,7 @@ from gethes.config import (
     ConfigStore,
     GameConfig,
 )
+from gethes.freesound_sfx import FreesoundSFXService
 from gethes.games.codebreaker import CodeBreakerGame
 from gethes.games.hangman import HangmanGame
 from gethes.games.snake import SnakeGame
@@ -30,7 +32,7 @@ from gethes.updater import UpdateInfo, UpdateManager
 from gethes.ui import ConsoleUI
 
 
-THEME_PRESETS: dict[str, tuple[str, str]] = {
+BUILTIN_THEME_PRESETS: dict[str, tuple[str, str]] = {
     "obsidian": ("#07090D", "#C7D5DF"),
     "void": ("#040507", "#8DA8BA"),
     "deepsea": ("#050B12", "#91D8FF"),
@@ -38,6 +40,18 @@ THEME_PRESETS: dict[str, tuple[str, str]] = {
     "amber": ("#0D0905", "#FFCF84"),
 }
 DEFAULT_UPDATE_REPO = "OrionTheProgrammer/Gethes"
+SFX_EVENT_ALIASES: dict[str, str] = {
+    "msg": "message",
+    "mensaje": "message",
+    "respuesta": "message",
+    "response": "message",
+    "error": "error",
+    "errores": "error",
+    "typing": "typing",
+    "tecleo": "typing",
+    "logro": "achievement",
+    "logros": "achievement",
+}
 
 
 class GethesApp:
@@ -46,11 +60,16 @@ class GethesApp:
         self.data_dir = package_dir / "data"
         self.assets_dir = package_dir / "assets" / "sfx"
         self.storage_dir = user_data_dir()
+        self.mods_dir = self.storage_dir / "mods"
+        self.theme_mods_dir = self.mods_dir / "themes"
+        self.story_mods_dir = self.mods_dir / "story"
+        self.user_sfx_dir = self.storage_dir / "sfx"
 
         self.config_store = ConfigStore(self.storage_dir / "gethes_config.json")
         self.config = self.config_store.load()
         self.i18n = I18n.from_mode(self.config.language)
         self.audio = AudioManager(enabled=self.config.sound)
+        self.sfx_service = FreesoundSFXService(api_key=self.config.freesound_api_key)
         self.input_handler: Callable[[str], None] | None = None
         self.update_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
         self.update_check_running = False
@@ -88,7 +107,9 @@ class GethesApp:
         self.ui.on_close = self._shutdown
         self.ui.on_idle = self._on_idle
         self.ui.set_audio(self.audio)
-        self.audio.initialize(self.assets_dir)
+        self._ensure_modding_templates()
+        self.theme_presets = self._load_theme_presets()
+        self._reload_audio_assets()
 
         self.boot_active = False
         self.boot_steps: list[str] = []
@@ -105,7 +126,7 @@ class GethesApp:
         words = self._load_words()
         self.snake = SnakeGame(self)
         self.hangman = HangmanGame(self, words)
-        self.story = StoryMode(self, self.data_dir)
+        self.story = StoryMode(self, self.data_dir, mod_story_dir=self.story_mods_dir)
         self.tictactoe = TicTacToeGame(self)
         self.codebreaker = CodeBreakerGame(self)
 
@@ -236,7 +257,7 @@ class GethesApp:
         legacy_bg = self.config.bg_color.strip().lower()
         legacy_fg = self.config.fg_color.strip().lower()
         if legacy_bg == "#101820" and legacy_fg == "#e8f1f2":
-            bg, fg = THEME_PRESETS["obsidian"]
+            bg, fg = self.theme_presets.get("obsidian", BUILTIN_THEME_PRESETS["obsidian"])
             self.config.bg_color = bg
             self.config.fg_color = fg
 
@@ -253,6 +274,147 @@ class GethesApp:
             words.append(value)
 
         return words or ["SYSTEM", "CONSOLE", "SNAKE", "HANGMAN", "STORY"]
+
+    def _ensure_modding_templates(self) -> None:
+        try:
+            self.theme_mods_dir.mkdir(parents=True, exist_ok=True)
+            self.story_mods_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        readme_path = self.mods_dir / "README_MODS.txt"
+        if not readme_path.exists():
+            try:
+                readme_path.write_text(
+                    "\n".join(
+                        [
+                            "Gethes Mods Folder",
+                            "",
+                            "themes/: add JSON files to define or override themes.",
+                            "story/: add story_<lang>.json (es/en/pt) or story.json.",
+                            "",
+                            "Story mod format:",
+                            "  {",
+                            '    "mode": "append" | "replace",',
+                            '    "title": "Optional title",',
+                            '    "chapters": [{"title": "...", "pages": ["...", "..."]}]',
+                            "  }",
+                            "",
+                            "Theme mod format (single):",
+                            '  {"name":"nocturne","bg":"#05070B","fg":"#C3CEDA"}',
+                            "",
+                            "Theme mod format (pack):",
+                            '  {"themes":{"nocturne":{"bg":"#05070B","fg":"#C3CEDA"}}}',
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+        theme_sample = self.theme_mods_dir / "sample_theme_pack.json"
+        if not theme_sample.exists():
+            try:
+                theme_sample.write_text(
+                    json.dumps(
+                        {
+                            "themes": {
+                                "nocturne": {"bg": "#05070B", "fg": "#C3CEDA"},
+                                "bloodmoon": {"bg": "#10060A", "fg": "#F0B7C1"},
+                                "mono_ice": {"bg": "#070B0D", "fg": "#D2E1E8"},
+                            }
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+        story_sample = self.story_mods_dir / "sample_story_es.json"
+        if not story_sample.exists():
+            try:
+                story_sample.write_text(
+                    json.dumps(
+                        {
+                            "mode": "append",
+                            "title": "Gethes: Ecos Externos",
+                            "chapters": [
+                                {
+                                    "title": "Capitulo Mod - Lluvia de Fondo",
+                                    "pages": [
+                                        "La ventana recibe gotas imaginarias. Syster no las oye, pero responde igual.",
+                                        "Si agregas mas capitulos aqui, apareceran al final del modo historia.",
+                                    ],
+                                }
+                            ],
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
+    def _load_theme_presets(self) -> dict[str, tuple[str, str]]:
+        presets = dict(BUILTIN_THEME_PRESETS)
+        for mod_file in sorted(self.theme_mods_dir.glob("*.json")):
+            try:
+                payload = json.loads(mod_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            for name, bg, fg in self._collect_theme_entries(payload):
+                normalized = name.strip().lower().replace(" ", "_")
+                if not normalized:
+                    continue
+                if not self.ui.is_valid_color(bg) or not self.ui.is_valid_color(fg):
+                    continue
+                presets[normalized] = (bg, fg)
+
+        return presets
+
+    def _collect_theme_entries(self, payload: object) -> list[tuple[str, str, str]]:
+        entries: list[tuple[str, str, str]] = []
+        if not isinstance(payload, dict):
+            return entries
+
+        if all(isinstance(payload.get(k), str) for k in ("name", "bg", "fg")):
+            entries.append(
+                (
+                    str(payload["name"]),
+                    str(payload["bg"]),
+                    str(payload["fg"]),
+                )
+            )
+
+        theme_pack = payload.get("themes")
+        if isinstance(theme_pack, dict):
+            for name, item in theme_pack.items():
+                if not isinstance(name, str) or not isinstance(item, dict):
+                    continue
+                bg = item.get("bg")
+                fg = item.get("fg")
+                if isinstance(bg, str) and isinstance(fg, str):
+                    entries.append((name, bg, fg))
+
+        for name, item in payload.items():
+            if name == "themes":
+                continue
+            if not isinstance(name, str) or not isinstance(item, dict):
+                continue
+            bg = item.get("bg")
+            fg = item.get("fg")
+            if isinstance(bg, str) and isinstance(fg, str):
+                entries.append((name, bg, fg))
+
+        return entries
+
+    def _reload_theme_presets(self) -> int:
+        self.theme_presets = self._load_theme_presets()
+        return len(self.theme_presets)
 
     def _on_idle(self) -> None:
         if self.intro_active or self.boot_active or self.snake.active or self.input_handler is not None:
@@ -394,7 +556,7 @@ class GethesApp:
             return
 
         if cmd == "sfx":
-            self._show_sfx_status()
+            self._handle_sfx(args)
             return
 
         if cmd == "save":
@@ -520,13 +682,226 @@ class GethesApp:
         self.audio.play("secret")
         self._save_current_slot(user_feedback=False)
 
+    def _handle_sfx(self, args: list[str]) -> None:
+        if not args:
+            self._show_sfx_status()
+            self.ui.write(self.tr("app.sfx.usage"))
+            return
+
+        action = args[0].lower()
+        payload = args[1:]
+
+        if action in {"status", "state"}:
+            self._show_sfx_status()
+            return
+        if action == "key":
+            self._handle_sfx_key(payload)
+            return
+        if action == "search":
+            self._handle_sfx_search(payload)
+            return
+        if action == "bind":
+            self._handle_sfx_bind(payload)
+            return
+        if action == "reset":
+            self._handle_sfx_reset(payload)
+            return
+        if action == "test":
+            self._handle_sfx_test(payload)
+            return
+
+        self.ui.write(self.tr("app.sfx.usage"))
+
     def _show_sfx_status(self) -> None:
         loaded = ", ".join(self.audio.loaded_events()) or "-"
         events = ", ".join(self.audio.available_events())
+        provider = "ON" if self.sfx_service.is_dependency_available() else "OFF"
+        overrides_count = len(self.config.sfx_overrides)
+
         self.ui.write(self.tr("app.sfx.status", status=self.audio.describe_status()))
         self.ui.write(self.tr("app.sfx.assets", path=str(self.assets_dir)))
+        self.ui.write(self.tr("app.sfx.custom_dir", path=str(self.user_sfx_dir)))
+        self.ui.write(self.tr("app.sfx.provider", value=provider))
+        self.ui.write(self.tr("app.sfx.key_status", value=self.sfx_service.masked_key()))
+        self.ui.write(self.tr("app.sfx.overrides", count=overrides_count))
         self.ui.write(self.tr("app.sfx.events", events=events))
         self.ui.write(self.tr("app.sfx.loaded", events=loaded))
+
+        if self.config.sfx_overrides:
+            items = ", ".join(
+                f"{event}:{name}" for event, name in sorted(self.config.sfx_overrides.items())
+            )
+            self.ui.write(self.tr("app.sfx.override_items", items=items))
+
+        loaded_files = self.audio.loaded_files()
+        if loaded_files:
+            items = ", ".join(f"{event}:{name}" for event, name in sorted(loaded_files.items()))
+            self.ui.write(self.tr("app.sfx.loaded_files", items=items))
+
+    def _handle_sfx_key(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.ui.write(self.tr("app.sfx.key_usage"))
+            return
+
+        value = args[0].strip()
+        if not value:
+            self.ui.write(self.tr("app.sfx.key_usage"))
+            return
+
+        if value.lower() in {"off", "none", "clear", "reset"}:
+            self.sfx_service.clear_api_key()
+            self.config.freesound_api_key = ""
+            self._save_config()
+            self.ui.write(self.tr("app.sfx.key_cleared"))
+            return
+
+        if not self.sfx_service.set_api_key(value):
+            if not self.sfx_service.is_dependency_available():
+                self.ui.write(self.tr("app.sfx.dependency_missing"))
+            else:
+                self.ui.write(self.tr("app.sfx.key_invalid"))
+            return
+
+        self.config.freesound_api_key = value
+        self._save_config()
+        self.ui.write(self.tr("app.sfx.key_set", value=self.sfx_service.masked_key()))
+
+    def _handle_sfx_search(self, args: list[str]) -> None:
+        if not args:
+            self.ui.write(self.tr("app.sfx.search_usage"))
+            return
+
+        query = " ".join(args).strip()
+        if not query:
+            self.ui.write(self.tr("app.sfx.search_usage"))
+            return
+
+        if not self.sfx_service.is_dependency_available():
+            self.ui.write(self.tr("app.sfx.dependency_missing"))
+            return
+        if not self.sfx_service.is_configured():
+            self.ui.write(self.tr("app.sfx.key_required"))
+            return
+
+        self.ui.write(self.tr("app.sfx.searching", query=query))
+        results, error_msg = self.sfx_service.search(query=query, limit=6)
+        if error_msg:
+            self.ui.write(self.tr("app.sfx.search_failed", error=error_msg))
+            return
+        if not results:
+            self.ui.write(self.tr("app.sfx.search_empty"))
+            return
+
+        self.ui.write(self.tr("app.sfx.search_title", query=query))
+        for item in results:
+            self.ui.write(
+                self.tr(
+                    "app.sfx.search_item",
+                    id=item.sound_id,
+                    name=item.name[:40],
+                    duration=f"{item.duration:.1f}",
+                    author=item.username,
+                    license=item.license_name,
+                )
+            )
+        self.ui.write(self.tr("app.sfx.search_bind_hint"))
+
+    def _handle_sfx_bind(self, args: list[str]) -> None:
+        if len(args) != 2:
+            self.ui.write(self.tr("app.sfx.bind_usage"))
+            return
+
+        event = self._normalize_sfx_event(args[0])
+        if event is None:
+            self.ui.write(self.tr("app.sfx.bind_event_invalid"))
+            self.ui.write(self.tr("app.sfx.events", events=", ".join(self.audio.available_events())))
+            return
+
+        try:
+            sound_id = int(args[1])
+        except ValueError:
+            self.ui.write(self.tr("app.sfx.bind_id_invalid"))
+            return
+        if sound_id <= 0:
+            self.ui.write(self.tr("app.sfx.bind_id_invalid"))
+            return
+
+        if not self.sfx_service.is_dependency_available():
+            self.ui.write(self.tr("app.sfx.dependency_missing"))
+            return
+        if not self.sfx_service.is_configured():
+            self.ui.write(self.tr("app.sfx.key_required"))
+            return
+
+        self.ui.write(self.tr("app.sfx.bind_downloading", event=event, id=sound_id))
+        target_name = f"{event}_{sound_id}.ogg"
+        downloaded, error_msg = self.sfx_service.download_preview(
+            sound_id=sound_id,
+            output_dir=self.user_sfx_dir,
+            target_name=target_name,
+            quality="lq",
+            file_format="ogg",
+        )
+        if downloaded is None or error_msg:
+            self.ui.write(self.tr("app.sfx.bind_failed", error=(error_msg or "unknown")))
+            return
+
+        self.config.sfx_overrides[event] = downloaded.name
+        self._reload_audio_assets()
+        self._save_config()
+        self.ui.write(self.tr("app.sfx.bind_done", event=event, file=downloaded.name))
+        self.audio.play(event)
+
+    def _handle_sfx_reset(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.ui.write(self.tr("app.sfx.reset_usage"))
+            return
+
+        target = args[0].lower()
+        if target == "all":
+            self.config.sfx_overrides = {}
+            self._reload_audio_assets()
+            self._save_config()
+            self.ui.write(self.tr("app.sfx.reset_done_all"))
+            return
+
+        event = self._normalize_sfx_event(target)
+        if event is None:
+            self.ui.write(self.tr("app.sfx.bind_event_invalid"))
+            self.ui.write(self.tr("app.sfx.events", events=", ".join(self.audio.available_events())))
+            return
+
+        self.config.sfx_overrides.pop(event, None)
+        self._reload_audio_assets()
+        self._save_config()
+        self.ui.write(self.tr("app.sfx.reset_done_one", event=event))
+
+    def _handle_sfx_test(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.ui.write(self.tr("app.sfx.test_usage"))
+            return
+
+        event = self._normalize_sfx_event(args[0])
+        if event is None:
+            self.ui.write(self.tr("app.sfx.bind_event_invalid"))
+            self.ui.write(self.tr("app.sfx.events", events=", ".join(self.audio.available_events())))
+            return
+
+        if event not in self.audio.loaded_events():
+            self.ui.write(self.tr("app.sfx.test_missing", event=event))
+            return
+
+        self.audio.play(event)
+        self.ui.write(self.tr("app.sfx.test_done", event=event))
+
+    def _normalize_sfx_event(self, raw_event: str) -> str | None:
+        token = raw_event.strip().lower()
+        if token in self.audio.available_events():
+            return token
+        alias = SFX_EVENT_ALIASES.get(token)
+        if alias and alias in self.audio.available_events():
+            return alias
+        return None
 
     def _show_achievements(self) -> None:
         unlocked = unlocked_count(self.current_slot.flags)
@@ -709,8 +1084,13 @@ class GethesApp:
             if token in {"list", "ls"}:
                 self._show_theme_list()
                 return
+            if token in {"reload", "mods"}:
+                count = self._reload_theme_presets()
+                self.ui.write(self.tr("app.theme_reloaded", count=count))
+                self.ui.write(self.tr("app.theme_mod_path", path=str(self.theme_mods_dir)))
+                return
 
-            theme = THEME_PRESETS.get(token)
+            theme = self.theme_presets.get(token)
             if theme is None:
                 self.ui.write(self.tr("app.theme_invalid"))
                 self._show_theme_list()
@@ -743,13 +1123,14 @@ class GethesApp:
     def _show_theme_list(self) -> None:
         self.ui.write(self.tr("app.theme_list_title"))
         active = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
-        for name, colors in THEME_PRESETS.items():
+        self.ui.write(self.tr("app.theme_mod_path", path=str(self.theme_mods_dir)))
+        for name, colors in self.theme_presets.items():
             mark = ">" if name == active else "-"
             bg, fg = colors
             self.ui.write(self.tr("app.theme_list_item", mark=mark, name=name, bg=bg, fg=fg))
 
     def _detect_theme_name(self, bg: str, fg: str) -> str:
-        for name, colors in THEME_PRESETS.items():
+        for name, colors in self.theme_presets.items():
             if colors[0].lower() == bg.lower() and colors[1].lower() == fg.lower():
                 return name
         return "custom"
@@ -1159,6 +1540,14 @@ class GethesApp:
         if self.input_handler is None and not self.boot_active and not self.intro_active:
             self.ui.set_status(self.tr("ui.ready"))
 
+    def _reload_audio_assets(self) -> None:
+        self.audio.initialize(
+            self.assets_dir,
+            user_assets_dir=self.user_sfx_dir,
+            overrides=self.config.sfx_overrides,
+        )
+        self.audio.set_enabled(self.config.sound)
+
     def _apply_visual_config(self) -> None:
         try:
             self.ui.apply_style(
@@ -1187,6 +1576,15 @@ class GethesApp:
         self.config.syster_mode = self.syster.mode
         self.config.syster_endpoint = self.syster.remote_endpoint
         self.config.update_repo = self.update_manager.repo
+        clean_overrides: dict[str, str] = {}
+        for event, file_name in self.config.sfx_overrides.items():
+            if event not in self.audio.available_events():
+                continue
+            normalized_name = Path(file_name).name.strip()
+            if not normalized_name:
+                continue
+            clean_overrides[event] = normalized_name
+        self.config.sfx_overrides = clean_overrides
         self.config_store.save(self.config)
 
     def _shutdown(self) -> None:
@@ -1347,7 +1745,7 @@ class GethesApp:
                 f"- sound <on|off>           : {self.tr('app.help.sound')}",
                 f"- graphics <low|medium|high>: {self.tr('app.help.graphics')}",
                 f"- uiscale <0.7-2.5>        : {self.tr('app.help.uiscale')}",
-                f"- theme <preset|list|bg fg>: {self.tr('app.help.theme')}",
+                f"- theme <preset|list|reload|bg fg>: {self.tr('app.help.theme')}",
                 f"- bg <color>               : {self.tr('app.help.bg')}",
                 f"- fg <color>               : {self.tr('app.help.fg')}",
                 f"- font <familia> [tamano]  : {self.tr('app.help.font')}",
@@ -1378,6 +1776,7 @@ class GethesApp:
                 f"- {self.tr('app.options.graphics'):13}: {self.config.graphics}",
                 f"- {self.tr('app.options.fps'):13}: {self.ui.get_target_fps()}",
                 f"- {self.tr('app.options.theme'):13}: {theme_value}",
+                f"- {self.tr('app.options.themes_count'):13}: {len(self.theme_presets)}",
                 f"- {self.tr('app.options.ui_scale'):13}: {self.config.ui_scale:.2f}x",
                 f"- {self.tr('app.options.version'):13}: {__version__}",
                 f"- {self.tr('app.options.language'):13}: {self.config.language} -> {self.i18n.active_language}",
@@ -1386,6 +1785,7 @@ class GethesApp:
                 f"- {self.tr('app.options.update_auto'):13}: {'ON' if self.config.auto_update_check else 'OFF'}",
                 f"- {self.tr('app.options.update_repo'):13}: {self.update_manager.repo or '-'}",
                 f"- {self.tr('app.options.achievements'):13}: {unlocked_count(self.current_slot.flags)}/{len(ACHIEVEMENTS)}",
+                f"- {self.tr('app.options.mods_path'):13}: {self.mods_dir}",
                 f"- {self.tr('app.options.storage'):13}: {self.storage_dir}",
             ]
         )

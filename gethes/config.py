@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import json
 
@@ -25,6 +25,8 @@ class GameConfig:
     update_repo: str = "OrionTheProgrammer/Gethes"
     auto_update_check: bool = True
     ui_scale: float = 1.0
+    freesound_api_key: str = ""
+    sfx_overrides: dict[str, str] = field(default_factory=dict)
 
 
 class ConfigStore:
@@ -87,6 +89,23 @@ class ConfigStore:
         ui_scale = payload.get("ui_scale")
         if isinstance(ui_scale, (int, float)) and 0.7 <= float(ui_scale) <= 2.5:
             cfg.ui_scale = float(ui_scale)
+
+        freesound_api_key = payload.get("freesound_api_key")
+        if isinstance(freesound_api_key, str):
+            cfg.freesound_api_key = freesound_api_key.strip()
+
+        raw_overrides = payload.get("sfx_overrides")
+        if isinstance(raw_overrides, dict):
+            clean_overrides: dict[str, str] = {}
+            for key, value in raw_overrides.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    continue
+                event_name = key.strip().lower()
+                file_name = Path(value.strip()).name
+                if not event_name or not file_name:
+                    continue
+                clean_overrides[event_name] = file_name
+            cfg.sfx_overrides = clean_overrides
 
         return cfg
 

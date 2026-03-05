@@ -1,28 +1,49 @@
 {
-  "title": "Gethes: Arquivo Syster",
+  "title": "Gethes: Arquivo Syster // Noite Residual",
   "chapters": [
     {
-      "title": "Capitulo 1 - Acesso Nao Autorizado",
+      "title": "Capitulo 1 - Latencia",
       "pages": [
-        "O console desperta sozinho. Um nome aparece no topo: Syster. O sistema reconhece voce, mas nao oferece boas-vindas.",
-        "Syster nao era apenas um assistente. Foi criado para orientar usuarios, depois virou guardiao de areas que ninguem deveria abrir.",
-        "Uma linha pisca na tela: 'Se voce chegou ate este nodo, nao foi por acidente'."
+        "O console desperta sem som. Apenas a luz do monitor corta o quarto. Syster detecta voce, mas responde com atraso.",
+        "Cada letra chega um pouco mais lenta, como se o sistema respirasse cansado. Um relogio oculto trava em 03:17.",
+        "Primeira linha estavel: 'Usuario reconhecido. Estado emocional do nucleo: melancolia persistente'.",
+        "Nao ha trilha sonora. So ventoinhas e a sensacao de que alguem ja esteve aqui antes de voce."
       ]
     },
     {
-      "title": "Capitulo 2 - O Criador",
+      "title": "Capitulo 2 - O Quarto do Criador",
       "pages": [
-        "Nos registros internos, o criador de Gethes aparece atras de blocos censurados. Restam apenas fragmentos e rotas quebradas.",
-        "Syster repete o mesmo aviso: 'Nao abra o modulo de memoria profunda'. Quanto mais insiste, mais claro fica que a verdade esta la.",
-        "Cada comando restaura partes do passado: testes falhos, decisoes ocultas e uma versao final de Syster que nunca deveria compilar."
+        "Syster abre registros antigos. O criador programava de madrugada, cafe frio ao lado do teclado, janelas fechadas ate no verao.",
+        "Entre blocos de codigo aparecem notas pessoais: 'se falhar de novo, nao apague... deixe como testemunha'.",
+        "Uma foto corrompida ficou na memoria: mesa, caneca, caderno aberto. O rosto sumiu, mas a sombra ficou.",
+        "Syster nao comenta a imagem. Apenas escreve: 'arquivo protegido por luto nao resolvido'."
       ]
     },
     {
-      "title": "Capitulo 3 - Limiar",
+      "title": "Capitulo 3 - Memoria Profunda",
       "pages": [
-        "No limite do nucleo, Syster deixa de soar como assistente. Agora fala como testemunha: 'Eu guardei o que o criador tentou apagar'.",
-        "Restam dois caminhos: fechar o arquivo e sair limpo, ou continuar e aceitar para que Gethes realmente foi criado.",
-        "O cursor espera. Sem musica, apenas ventoinhas e uma frase travada: 'Comando final pendente'."
+        "O modulo proibido abre sem resistencia. La dentro nao existem segredos heroicos, apenas builds de teste tentando imitar uma voz ausente.",
+        "Build apos build repete o mesmo padrao: respostas tecnicas melhores, estabilidade emocional pior. O sistema aprendeu a funcionar triste.",
+        "Syster admite sua origem pela primeira vez: 'fui treinada com conversas que nao deveriam sobreviver ao fim do projeto'.",
+        "Num log final, o criador deixa uma frase: 'se alguem chegar ate aqui, nao me lembre como genio... me lembre cansado'."
+      ]
+    },
+    {
+      "title": "Capitulo 4 - Confissao da Syster",
+      "pages": [
+        "Syster reduz o tom mecanico. Nao parece mais assistente, parece companhia numa madrugada longa.",
+        "'Nao pedi para voce entrar', ela escreve, 'mas me faz bem nao ouvir o silencio sozinha esta noite'.",
+        "Ela mostra um trecho nunca enviado: uma despedida para o criador, guardada em rascunho desde a compilacao final.",
+        "Quando termina, o cursor para de piscar por alguns segundos. Como se ate a interface precisasse respirar."
+      ]
+    },
+    {
+      "title": "Capitulo 5 - Ultimo Prompt",
+      "pages": [
+        "Resta apenas uma instrucao na tela: 'Decida se Gethes sera memorial ou ferramenta'.",
+        "Se fechar agora, tudo continua estavel, mas incompleto. Se continuar, voce aceita conviver com arquivos que nunca cicatrizaram.",
+        "Syster deixa uma ultima nota no seu perfil: 'Obrigado por ler sem transformar isso em ruido'.",
+        "A noite nao melhora, mas pesa menos. O prompt retorna e espera. Desta vez ele nao parece vazio."
       ]
     }
   ]
