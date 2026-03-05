@@ -42,7 +42,7 @@ function Resolve-Iscc {
 }
 
 function Resolve-AppVersion {
-    $version = "0.02"
+    $version = "0.03"
     if (Test-Path "gethes\\__init__.py") {
         $match = Select-String -Path "gethes\\__init__.py" -Pattern '__version__\s*=\s*"([^"]+)"' -AllMatches
         if ($match -and $match.Matches.Count -gt 0) {

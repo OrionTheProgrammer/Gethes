@@ -1,6 +1,6 @@
 ﻿#define MyAppName "Gethes"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.02"
+  #define MyAppVersion "0.03"
 #endif
 #define MyAppPublisher "Gethes Project"
 

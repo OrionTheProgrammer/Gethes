@@ -140,7 +140,7 @@ class UpdateManager:
             url,
             headers={
                 "Accept": accept,
-                "User-Agent": "Gethes-Updater/0.02",
+                "User-Agent": "Gethes-Updater/0.03",
             },
             method="GET",
         )
@@ -308,7 +308,7 @@ class UpdateManager:
             url,
             headers={
                 "Accept": "application/vnd.github+json",
-                "User-Agent": "Gethes-Updater/0.02",
+                "User-Agent": "Gethes-Updater/0.03",
             },
             method="GET",
         )

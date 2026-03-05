@@ -267,7 +267,7 @@ class SysterAssistant:
             "context": asdict(context),
             "memory": self._memory_payload(),
             "agent": "Syster",
-            "version": "0.02",
+            "version": "0.03",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
@@ -276,7 +276,7 @@ class SysterAssistant:
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/plain",
-                "User-Agent": "Gethes-Syster/0.02",
+                "User-Agent": "Gethes-Syster/0.03",
             },
             method="POST",
         )

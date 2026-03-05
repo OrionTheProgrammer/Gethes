@@ -1,0 +1,4 @@
+# file: C:\Proyectos\Gethes\gethes\__init__.py
+# hypothesis_version: 6.151.9
+
+['0.03', 'app', 'audio', 'config', 'freesound_sfx', 'i18n', 'icon_pack', 'mod_watcher', 'runtime_paths', 'save_system', 'syster', 'ui', 'updater']
