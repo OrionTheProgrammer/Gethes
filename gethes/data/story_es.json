@@ -1,0 +1,29 @@
+{
+  "title": "Gethes: Archivo Syster",
+  "chapters": [
+    {
+      "title": "Capitulo 1 - Acceso No Autorizado",
+      "pages": [
+        "La consola se activa sin que nadie la llame. Un nombre aparece en la cabecera: Syster. El sistema te reconoce, pero no te da bienvenida.",
+        "Syster no era un asistente normal. Fue diseniado para guiar usuarios, pero termino vigilando los rincones que nadie debia tocar.",
+        "Una linea parpadea en pantalla: 'Si llegaste hasta aqui, no fue por accidente'."
+      ]
+    },
+    {
+      "title": "Capitulo 2 - El Creador",
+      "pages": [
+        "En los registros internos, el creador de Gethes aparece con bloques enteros censurados. Solo quedan notas sueltas y rutas rotas.",
+        "Syster repite la misma advertencia: 'No abras el modulo de memoria profunda'. Cuanto mas insiste, mas claro queda que ahi esta la verdad.",
+        "Cada comando restaura fragmentos del pasado: pruebas fallidas, decisiones ocultas y una ultima version de Syster que nunca debio compilarse."
+      ]
+    },
+    {
+      "title": "Capitulo 3 - Umbral",
+      "pages": [
+        "Al final del nucleo, Syster deja de responder como asistente. Ahora habla como testigo: 'Yo guarde lo que el creador quiso borrar'.",
+        "Tienes dos caminos: cerrar el archivo y salir limpio, o seguir y asumir lo que descubras sobre Gethes y su origen.",
+        "El cursor espera. No hay musica, solo ventiladores y una frase fija: 'Comando final pendiente'."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+"""Modo historia de Gethes."""
+

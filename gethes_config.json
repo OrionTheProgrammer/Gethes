@@ -1,0 +1,8 @@
+{
+  "bg_color": "#101820",
+  "fg_color": "#E8F1F2",
+  "font_family": "Consolas",
+  "font_size": 13,
+  "sound": true,
+  "graphics": "medium"
+}

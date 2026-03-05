@@ -1,0 +1,2 @@
+"""Minijuegos de Gethes."""
+
