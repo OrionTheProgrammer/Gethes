@@ -68,6 +68,17 @@ INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "codebreaker",
         "codigo",
     ),
+    "rogue": (
+        "rogue",
+        "roguelike",
+        "rogelike",
+        "dungeon",
+        "mazmorra",
+        "expedicion",
+        "floor",
+        "piso",
+        "andar",
+    ),
     "settings": (
         "theme",
         "tema",
@@ -100,6 +111,17 @@ INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "musica",
         "mute",
     ),
+    "diagnostics": (
+        "doctor",
+        "diag",
+        "diagnostico",
+        "diagnostics",
+        "error",
+        "errores",
+        "bug",
+        "issue",
+        "problema",
+    ),
     "mods": ("mod", "mods", "modding", "tema mod", "story mod"),
     "creator": ("creator", "creador", "orion", "secreto", "secret", "gethes"),
     "identity": ("quien eres", "quien sos", "who are you", "quem e voce", "eres syster"),
@@ -115,9 +137,11 @@ INTENT_TO_COMMAND = {
     "save": "savegame",
     "profile": "slots",
     "games": "snake",
+    "rogue": "roguelike",
     "settings": "options",
     "update": "update status",
     "audio": "sfx doctor",
+    "diagnostics": "doctor all",
     "mods": "theme list",
     "achievements": "logros",
 }
@@ -131,6 +155,9 @@ class SysterContext:
     story_total: int = 0
     achievements_unlocked: int = 0
     achievements_total: int = 0
+    rogue_runs: int = 0
+    rogue_wins: int = 0
+    rogue_best_depth: int = 0
     last_command: str = ""
 
 
@@ -180,6 +207,11 @@ class SysterAssistant:
         if not normalized:
             return tr("app.syster.reply.unknown")
 
+        if normalized in {"brief", "briefing", "resumen", "estado", "status"}:
+            self.last_intent = "briefing"
+            self.memory.append((normalized, "briefing"))
+            return self.briefing(tr, ctx)
+
         if self.mode == "hybrid":
             remote_reply = self._remote_reply(prompt.strip(), ctx)
             if remote_reply:
@@ -223,6 +255,16 @@ class SysterAssistant:
         if intent == "games":
             return tr("app.syster.reply.games")
 
+        if intent == "rogue":
+            if ctx.rogue_runs > 0:
+                return tr(
+                    "app.syster.reply.rogue_progress",
+                    runs=ctx.rogue_runs,
+                    wins=ctx.rogue_wins,
+                    depth=ctx.rogue_best_depth,
+                )
+            return tr("app.syster.reply.rogue")
+
         if intent == "settings":
             return tr("app.syster.reply.settings")
 
@@ -231,6 +273,9 @@ class SysterAssistant:
 
         if intent == "audio":
             return tr("app.syster.reply.audio")
+
+        if intent == "diagnostics":
+            return tr("app.syster.reply.diagnostics")
 
         if intent == "mods":
             return tr("app.syster.reply.mods")
@@ -256,6 +301,22 @@ class SysterAssistant:
 
         hint_cmd = self._suggest_command(intent, ctx)
         return tr("app.syster.reply.hint", cmd=hint_cmd)
+
+    def briefing(self, tr: Callable[[str], str], context: SysterContext) -> str:
+        recommended = self._recommend_next_command(context)
+        return tr(
+            "app.syster.reply.briefing",
+            slot=context.slot_id,
+            route=context.route_name,
+            page=context.story_page,
+            total=context.story_total,
+            unlocked=context.achievements_unlocked,
+            achievements=context.achievements_total,
+            runs=context.rogue_runs,
+            wins=context.rogue_wins,
+            depth=context.rogue_best_depth,
+            cmd=recommended,
+        )
 
     def _follow_up_reply(self, tr: Callable[[str], str], context: SysterContext) -> str:
         if self.last_intent in {
@@ -462,6 +523,17 @@ class SysterAssistant:
             if intent in {"unknown", "help"}:
                 return context.last_command
         return suggested
+
+    def _recommend_next_command(self, context: SysterContext) -> str:
+        if context.story_total > 0 and context.story_page < context.story_total:
+            return "historia"
+        if context.rogue_runs <= 0:
+            return "roguelike"
+        if context.achievements_unlocked < context.achievements_total:
+            return "logros"
+        if context.last_command and context.last_command not in {"", "syster"}:
+            return context.last_command
+        return "help"
 
     @staticmethod
     def _is_follow_up(text: str) -> bool:

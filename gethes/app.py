@@ -15,6 +15,7 @@ from typing import Callable
 from gethes import __version__
 from gethes.achievements import ACHIEVEMENTS, BY_ID, is_unlocked, unlocked_count
 from gethes.audio import AudioManager
+from gethes.cloud_sync import CloudSyncClient
 from gethes.config import (
     GRAPHICS_LEVELS,
     LANGUAGE_MODES,
@@ -153,6 +154,17 @@ BUILTIN_THEME_PRESETS: dict[str, ThemePreset] = {
         particle_strength=0.62,
         unlock_achievement="story_companion_route",
     ),
+    "abyss_protocol": ThemePreset(
+        bg="#02040A",
+        fg="#C8D8FF",
+        accent="#6D8BFF",
+        panel="#070D17",
+        dim="#6D7FA5",
+        scan_strength=1.18,
+        glow_strength=1.22,
+        particle_strength=1.2,
+        unlock_achievement="rogue_victory",
+    ),
     "ghost_echo": ThemePreset(
         bg="#04070B",
         fg="#BFE7F0",
@@ -166,7 +178,7 @@ BUILTIN_THEME_PRESETS: dict[str, ThemePreset] = {
     ),
 }
 DEFAULT_UPDATE_REPO = "OrionTheProgrammer/Gethes"
-SYSTER_ENABLED = False
+SYSTER_ENABLED = True
 SFX_EVENT_ALIASES: dict[str, str] = {
     "msg": "message",
     "mensaje": "message",
@@ -184,6 +196,7 @@ SFX_EVENT_ALIASES: dict[str, str] = {
 class GethesApp:
     def __init__(self) -> None:
         package_dir = resource_package_dir()
+        self.package_dir = package_dir
         self.data_dir = package_dir / "data"
         self.assets_dir = package_dir / "assets" / "sfx"
         self.storage_dir = user_data_dir()
@@ -197,11 +210,26 @@ class GethesApp:
         self.i18n = I18n.from_mode(self.config.language)
         self.audio = AudioManager(enabled=self.config.sound)
         self.sfx_service = FreesoundSFXService(api_key=self.config.freesound_api_key)
+        self.cloud = CloudSyncClient(
+            endpoint=self.config.cloud_endpoint,
+            api_key=self.config.cloud_api_key,
+        )
+        if self.cloud.is_linked():
+            # Cloud sync is background-only when endpoint is configured.
+            self.config.cloud_enabled = True
         self.input_handler: Callable[[str], None] | None = None
         self.update_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
         self.mod_watcher: ModWatcher | None = None
         self.mod_reload_times: dict[str, float] = {"theme": 0.0, "story": 0.0}
         self.theme_mod_errors: list[str] = []
+        self.awaiting_player_name = False
+        self.cloud_sync_running = False
+        self.cloud_sync_cooldown = 75.0
+        self.cloud_sync_elapsed = 0.0
+        self.cloud_last_status = "idle"
+        self.cloud_last_message = ""
+        self.cloud_last_presence: dict[str, object] = {}
+        self.cloud_last_sync_at = 0.0
         self.update_check_running = False
         self.update_install_running = False
         self.update_install_after_check = False
@@ -276,6 +304,7 @@ class GethesApp:
         self._sync_theme_visual_profile()
         self._refresh_ui_language()
         self._apply_visual_config()
+        self._apply_player_identity()
 
         words = self._load_words()
         self.snake = SnakeGame(self)
@@ -302,6 +331,9 @@ class GethesApp:
             return
         if self.boot_active:
             self._update_boot(dt)
+            return
+
+        self._update_cloud_autosync(dt)
         if self.snake.active:
             self.snake.update(dt)
         if self.physics_lab.active:
@@ -484,8 +516,12 @@ class GethesApp:
         if cancelled:
             return
         self.bump_stat("rogue_runs", 1)
+        self._unlock_achievement("rogue_first_run")
         if won:
             self.bump_stat("rogue_wins", 1)
+            self._unlock_achievement("rogue_victory")
+        if depth >= 3:
+            self._unlock_achievement("rogue_depth_3")
         self.set_stat_max("rogue_best_depth", depth)
         self.set_stat_max("rogue_best_gold", gold)
         self.set_stat_max("rogue_best_kills", kills)
@@ -949,6 +985,10 @@ class GethesApp:
             self._rename_slot(args)
             return
 
+        if cmd in {"user", "username", "usuario", "nome", "player"}:
+            self._handle_user(args)
+            return
+
         if cmd == "savegame":
             self._save_current_slot(user_feedback=True)
             return
@@ -999,6 +1039,14 @@ class GethesApp:
 
         if cmd in {"update", "actualizar", "atualizar"}:
             self._handle_update(args)
+            return
+
+        if cmd == "assets":
+            self._handle_assets(args)
+            return
+
+        if cmd in {"cloud", "nube", "nuvem"}:
+            self.ui.write(self.tr("app.cloud.auto_info"))
             return
 
         if cmd == "sfx":
@@ -1070,6 +1118,11 @@ class GethesApp:
             "slots",
             "slot",
             "slotname",
+            "user",
+            "username",
+            "usuario",
+            "nome",
+            "player",
             "savegame",
             "syster",
             "creator",
@@ -1092,6 +1145,7 @@ class GethesApp:
             "update",
             "actualizar",
             "atualizar",
+            "assets",
             "sfx",
             "save",
             "exit",
@@ -1146,9 +1200,9 @@ class GethesApp:
 
     def _syster_auto_prompt(self, trigger: str) -> str:
         if trigger == "boot":
-            return "hola"
+            return "briefing"
         if trigger == "idle":
-            return "help"
+            return "briefing"
 
         cmd = self.last_command
         if cmd in {
@@ -1228,10 +1282,26 @@ class GethesApp:
                 else self.tr("app.syster.remote.off")
             )
             self.ui.write(self.tr("app.syster.remote_status", status=remote_status))
+            summary = self.syster.briefing(
+                lambda key, **kwargs: self.tr(key, **kwargs),
+                self._build_syster_context(),
+            )
+            self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
+            self.ui.write(summary)
             self.ui.write(self.tr("app.syster.usage"))
             return
 
         action = args[0].lower()
+        if action in {"brief", "briefing", "recap"}:
+            summary = self.syster.briefing(
+                lambda key, **kwargs: self.tr(key, **kwargs),
+                self._build_syster_context(),
+            )
+            self.ui.write(self.tr("app.syster.prefix"))
+            self.ui.write(summary)
+            self.audio.play("message")
+            return
+
         if action == "mode":
             if len(args) != 2:
                 self.ui.write(self.tr("app.syster.mode_usage"))
@@ -1302,6 +1372,9 @@ class GethesApp:
             story_total=self.current_slot.story_total,
             achievements_unlocked=unlocked_count(self.current_slot.flags),
             achievements_total=len(ACHIEVEMENTS),
+            rogue_runs=self.get_stat("rogue_runs"),
+            rogue_wins=self.get_stat("rogue_wins"),
+            rogue_best_depth=self.get_stat("rogue_best_depth"),
             last_command=self.last_command,
         )
 
@@ -1339,6 +1412,7 @@ class GethesApp:
                 slot=self.current_slot.slot_id,
                 route=self.current_slot.route_name,
                 language=self.i18n.active_language,
+                player=self._player_name(),
             )
         )
 
@@ -1399,6 +1473,53 @@ class GethesApp:
             return
 
         self.ui.write(self.tr("app.sfx.usage"))
+
+    def _handle_assets(self, args: list[str]) -> None:
+        packs = {
+            "rogue": self.package_dir / "assets" / "rogue",
+            "snake": self.package_dir / "assets" / "snake",
+            "ttt": self.package_dir / "assets" / "ttt",
+        }
+
+        def asset_count(path: Path) -> int:
+            return len(list(path.glob("*.png"))) if path.exists() else 0
+
+        if not args:
+            self.ui.write(self.tr("app.assets.usage"))
+            self.ui.write(
+                self.tr(
+                    "app.assets.status",
+                    rogue_path=str(packs["rogue"]),
+                    rogue_count=asset_count(packs["rogue"]),
+                    snake_path=str(packs["snake"]),
+                    snake_count=asset_count(packs["snake"]),
+                    ttt_path=str(packs["ttt"]),
+                    ttt_count=asset_count(packs["ttt"]),
+                )
+            )
+            return
+
+        action = args[0].strip().lower()
+        if action in {"status", "info"}:
+            self.ui.write(
+                self.tr(
+                    "app.assets.status",
+                    rogue_path=str(packs["rogue"]),
+                    rogue_count=asset_count(packs["rogue"]),
+                    snake_path=str(packs["snake"]),
+                    snake_count=asset_count(packs["snake"]),
+                    ttt_path=str(packs["ttt"]),
+                    ttt_count=asset_count(packs["ttt"]),
+                )
+            )
+            return
+
+        if action in {"reload", "refresh"}:
+            self.ui.reload_visual_assets()
+            self.ui.write(self.tr("app.assets.reload"))
+            return
+
+        self.ui.write(self.tr("app.assets.usage"))
 
     def _show_sfx_status(self) -> None:
         loaded = ", ".join(self.audio.loaded_events()) or "-"
@@ -1729,6 +1850,7 @@ class GethesApp:
             )
         )
         self.ui.write(self._options_text())
+        self._queue_cloud_sync(reason="slot_switched", force=True)
 
     def _rename_slot(self, args: list[str]) -> None:
         if not args:
@@ -1750,6 +1872,254 @@ class GethesApp:
             )
         )
 
+    def _handle_user(self, args: list[str]) -> None:
+        if not args:
+            self.ui.write(self.tr("app.player.current", name=self._player_name()))
+            self.ui.write(self.tr("app.player.usage"))
+            return
+
+        raw = " ".join(args).strip()
+        lowered = raw.lower()
+        if lowered in {"guest", "invitado", "convidado", "off", "none"}:
+            self.config.player_name = ""
+            self._apply_player_identity()
+            self._save_config()
+            self.ui.write(self.tr("app.player.guest_set"))
+            self._queue_cloud_sync(reason="player_guest")
+            return
+
+        name = self._sanitize_player_name(raw)
+        if not name:
+            self.ui.write(self.tr("app.player.invalid"))
+            self.ui.write(self.tr("app.player.usage"))
+            return
+
+        self.config.player_name = name
+        self._apply_player_identity()
+        self._save_config()
+        self.ui.write(self.tr("app.player.updated", name=name))
+        self.ui.push_notification(
+            self.tr("app.player.toast.title"),
+            self.tr("app.player.toast.body", name=name),
+            icon_key="mdi:account",
+        )
+        self._queue_cloud_sync(reason="player_updated", force=True)
+
+    def _handle_cloud(self, args: list[str]) -> None:
+        action = args[0].strip().lower() if args else "status"
+
+        if action in {"status", "state"}:
+            self._show_cloud_status()
+            return
+
+        if action in {"link", "set"}:
+            if not args[1:]:
+                self.ui.write(self.tr("app.cloud.link_usage"))
+                return
+            endpoint = args[1].strip()
+            token = " ".join(args[2:]).strip() if len(args) >= 3 else ""
+            normalized = CloudSyncClient.normalize_endpoint(endpoint)
+            if not (normalized.startswith("http://") or normalized.startswith("https://")):
+                self.ui.write(self.tr("app.cloud.endpoint_invalid"))
+                self.ui.write(self.tr("app.cloud.link_usage"))
+                return
+            self.cloud.configure(normalized, token or self.config.cloud_api_key)
+            self.config.cloud_endpoint = self.cloud.endpoint
+            if token:
+                self.config.cloud_api_key = token
+            self.config.cloud_enabled = True
+            self._save_config()
+            self.ui.write(self.tr("app.cloud.linked", endpoint=self.cloud.endpoint))
+            self._queue_cloud_sync(reason="cloud_link", force=True)
+            return
+
+        if action in {"off", "unlink", "disable"}:
+            self.cloud.configure("", "")
+            self.config.cloud_endpoint = ""
+            self.config.cloud_enabled = False
+            self._save_config()
+            self.ui.write(self.tr("app.cloud.disabled"))
+            return
+
+        if action in {"key", "token"}:
+            if len(args) < 2:
+                self.ui.write(self.tr("app.cloud.key_usage"))
+                return
+            value = " ".join(args[1:]).strip()
+            if value.lower() in {"off", "none", "clear"}:
+                self.cloud.configure(self.cloud.endpoint, "")
+                self.config.cloud_api_key = ""
+                self._save_config()
+                self.ui.write(self.tr("app.cloud.key_cleared"))
+                return
+            self.cloud.configure(self.cloud.endpoint, value)
+            self.config.cloud_api_key = value
+            self._save_config()
+            self.ui.write(self.tr("app.cloud.key_set", value=self.cloud.masked_key()))
+            return
+
+        if action in {"sync", "push"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            self._queue_cloud_sync(reason="manual_sync", force=True, user_feedback=True)
+            return
+
+        if action in {"online", "presence"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            self._queue_cloud_presence(user_feedback=True)
+            return
+
+        self.ui.write(self.tr("app.cloud.usage"))
+
+    def _show_cloud_status(self) -> None:
+        enabled = self.config.cloud_enabled and self.cloud.is_linked()
+        self.ui.write(
+            self.tr(
+                "app.cloud.status",
+                enabled=("ON" if enabled else "OFF"),
+                endpoint=(self.cloud.endpoint or "-"),
+                api_key=self.cloud.masked_key(),
+                state=self.cloud_last_status,
+            )
+        )
+        if self.cloud_last_message:
+            self.ui.write(self.tr("app.cloud.last_message", value=self.cloud_last_message))
+        if self.cloud_last_sync_at > 0:
+            self.ui.write(
+                self.tr(
+                    "app.cloud.last_sync",
+                    seconds=max(0, int(time.monotonic() - self.cloud_last_sync_at)),
+                )
+            )
+        if self.cloud_last_presence:
+            online = int(self.cloud_last_presence.get("players_online", 0) or 0)
+            users = int(self.cloud_last_presence.get("registered_users", 0) or 0)
+            self.ui.write(self.tr("app.cloud.presence", online=online, users=users))
+        self.ui.write(self.tr("app.cloud.usage"))
+
+    def _build_cloud_payload(self, reason: str) -> dict[str, object]:
+        active_theme = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
+        return {
+            "install_id": self.config.install_id,
+            "player_name": self._player_name(),
+            "reason": reason,
+            "version": __version__,
+            "timestamp_unix": int(time.time()),
+            "profile": {
+                "slot_id": self.current_slot.slot_id,
+                "route_name": self.current_slot.route_name,
+                "story_page": self.current_slot.story_page,
+                "story_total": self.current_slot.story_total,
+                "achievements_unlocked": unlocked_count(self.current_slot.flags),
+                "achievements_total": len(ACHIEVEMENTS),
+            },
+            "scores": {
+                "snake_best_score": self.get_stat("snake_best_score"),
+                "snake_best_level": self.get_stat("snake_best_level"),
+                "snake_longest_length": self.get_stat("snake_longest_length"),
+                "rogue_best_depth": self.get_stat("rogue_best_depth"),
+                "rogue_best_gold": self.get_stat("rogue_best_gold"),
+                "rogue_best_kills": self.get_stat("rogue_best_kills"),
+                "rogue_runs": self.get_stat("rogue_runs"),
+                "rogue_wins": self.get_stat("rogue_wins"),
+            },
+            "preferences": {
+                "language_mode": self.config.language,
+                "language_active": self.i18n.active_language,
+                "graphics": self.config.graphics,
+                "sound": bool(self.config.sound),
+                "ui_scale": float(self.config.ui_scale),
+                "theme": active_theme,
+                "theme_fx": {
+                    "scan": float(self.config.theme_scan_strength),
+                    "glow": float(self.config.theme_glow_strength),
+                    "particles": float(self.config.theme_particles_strength),
+                },
+            },
+        }
+
+    def _queue_cloud_sync(
+        self,
+        reason: str,
+        force: bool = False,
+        user_feedback: bool = False,
+    ) -> bool:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if self.cloud_sync_running:
+            return False
+        if not force and (time.monotonic() - self.cloud_last_sync_at) < 4.0:
+            return False
+
+        self.cloud_sync_running = True
+        payload = self._build_cloud_payload(reason)
+        if user_feedback:
+            self.ui.write(self.tr("app.cloud.syncing"))
+
+        def worker() -> None:
+            response = self.cloud.push_snapshot(payload)
+            self.update_events.put(
+                (
+                    "cloud_sync_done",
+                    {
+                        "ok": response.ok,
+                        "status_code": response.status_code,
+                        "message": response.message,
+                        "payload": response.payload,
+                        "user_feedback": user_feedback,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-cloud-sync").start()
+        return True
+
+    def _queue_cloud_presence(self, user_feedback: bool = False) -> bool:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if self.cloud_sync_running:
+            return False
+        self.cloud_sync_running = True
+        if user_feedback:
+            self.ui.write(self.tr("app.cloud.presence_query"))
+
+        def worker() -> None:
+            response = self.cloud.fetch_presence()
+            self.update_events.put(
+                (
+                    "cloud_presence_done",
+                    {
+                        "ok": response.ok,
+                        "status_code": response.status_code,
+                        "message": response.message,
+                        "payload": response.payload,
+                        "user_feedback": user_feedback,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-cloud-presence").start()
+        return True
+
+    def _update_cloud_autosync(self, dt: float) -> None:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return
+        if self.awaiting_player_name:
+            return
+        if self.input_handler is not None:
+            return
+        if self.snake.active or self.physics_lab.active or self.roguelike.active:
+            return
+
+        self.cloud_sync_elapsed += dt
+        if self.cloud_sync_elapsed < self.cloud_sync_cooldown:
+            return
+        self.cloud_sync_elapsed = 0.0
+        self._queue_cloud_sync(reason="autosync")
+
     def _save_current_slot(self, user_feedback: bool) -> None:
         self.save_manager.save_slot(self.current_slot)
         if user_feedback:
@@ -1760,6 +2130,7 @@ class GethesApp:
                     route=self.current_slot.route_name,
                 )
             )
+        self._queue_cloud_sync(reason="save_slot")
 
     def _set_sound(self, args: list[str]) -> None:
         if len(args) != 1:
@@ -2622,6 +2993,14 @@ class GethesApp:
                 self._consume_mod_change(payload)
                 continue
 
+            if event == "cloud_sync_done":
+                self._consume_cloud_sync_done(payload)
+                continue
+
+            if event == "cloud_presence_done":
+                self._consume_cloud_presence_done(payload)
+                continue
+
     def _consume_update_progress(self, payload: dict[str, object]) -> None:
         downloaded = int(payload.get("downloaded", 0) or 0)
         total = int(payload.get("total", 0) or 0)
@@ -2672,6 +3051,56 @@ class GethesApp:
             self.tr("app.mods.toast.story_body"),
             icon_key="mdi:information-outline",
         )
+
+    def _consume_cloud_sync_done(self, payload: dict[str, object]) -> None:
+        self.cloud_sync_running = False
+        self.cloud_last_sync_at = time.monotonic()
+        ok = bool(payload.get("ok", False))
+        message = str(payload.get("message", "")).strip()
+        data = payload.get("payload")
+        user_feedback = bool(payload.get("user_feedback", False))
+
+        self.cloud_last_status = "ok" if ok else "error"
+        self.cloud_last_message = message
+
+        if isinstance(data, dict):
+            online = data.get("players_online")
+            users = data.get("registered_users")
+            if isinstance(online, (int, float)) or isinstance(users, (int, float)):
+                current = dict(self.cloud_last_presence)
+                if isinstance(online, (int, float)):
+                    current["players_online"] = int(online)
+                if isinstance(users, (int, float)):
+                    current["registered_users"] = int(users)
+                self.cloud_last_presence = current
+
+        if user_feedback:
+            if ok:
+                self.ui.write(self.tr("app.cloud.sync_ok"))
+            else:
+                self.ui.write(self.tr("app.cloud.sync_failed", error=(message or "network_error")))
+
+    def _consume_cloud_presence_done(self, payload: dict[str, object]) -> None:
+        self.cloud_sync_running = False
+        self.cloud_last_sync_at = time.monotonic()
+        ok = bool(payload.get("ok", False))
+        message = str(payload.get("message", "")).strip()
+        data = payload.get("payload")
+        user_feedback = bool(payload.get("user_feedback", False))
+
+        self.cloud_last_status = "ok" if ok else "error"
+        self.cloud_last_message = message
+
+        if isinstance(data, dict):
+            self.cloud_last_presence = data
+            if user_feedback:
+                online = int(data.get("players_online", 0) or 0)
+                users = int(data.get("registered_users", 0) or 0)
+                self.ui.write(self.tr("app.cloud.presence", online=online, users=users))
+                return
+
+        if user_feedback:
+            self.ui.write(self.tr("app.cloud.sync_failed", error=(message or "network_error")))
 
     def _consume_update_check_result(self, payload: dict[str, object]) -> None:
         self.update_check_running = False
@@ -2925,6 +3354,30 @@ class GethesApp:
         self.ui.set_mode_chip(self.tr("ui.version_chip", version=__version__))
         if self.input_handler is None and not self.boot_active and not self.intro_active:
             self.ui.set_status(self.tr("ui.ready"))
+        self._apply_player_identity()
+
+    @staticmethod
+    def _sanitize_player_name(raw: str) -> str:
+        value = " ".join(raw.strip().split())
+        if not value:
+            return ""
+        cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"_", "-", " "})
+        normalized = " ".join(cleaned.split()).strip()
+        return normalized[:24]
+
+    def _player_name(self) -> str:
+        name = self._sanitize_player_name(self.config.player_name)
+        if not name:
+            return self.tr("app.player.guest")
+        return name
+
+    def _apply_player_identity(self) -> None:
+        raw_name = self._sanitize_player_name(self.config.player_name)
+        if not raw_name:
+            self.ui.set_prompt("Gethes>")
+            return
+        prompt_token = raw_name.replace(" ", "_")
+        self.ui.set_prompt(f"{prompt_token}>")
 
     def _reload_audio_assets(self) -> None:
         self.audio.initialize(
@@ -3039,10 +3492,8 @@ class GethesApp:
             return
 
         self.boot_active = False
-        self.ui.set_screen(self._welcome_text())
-        self.ui.set_status(self.tr("ui.help_hint"))
         self.ui.set_entry_enabled(True)
-        self.audio.play("success")
+        self._after_boot_ready()
         self._unlock_achievement("boot_sequence")
         self._trigger_syster_auto("boot")
         self._trigger_auto_update_check()
@@ -3090,6 +3541,73 @@ class GethesApp:
         )
         return "\n".join(lines)
 
+    def _after_boot_ready(self) -> None:
+        self.audio.play("success")
+        name = self._sanitize_player_name(self.config.player_name)
+        if not name:
+            self._start_player_name_setup()
+            return
+
+        self.config.player_name = name
+        self._apply_player_identity()
+        self.ui.set_screen(self._welcome_text())
+        self.ui.set_status(self.tr("ui.help_hint"))
+        self._queue_cloud_sync(reason="boot", force=True)
+
+    def _start_player_name_setup(self) -> None:
+        self.awaiting_player_name = True
+        self.set_input_handler(self._handle_player_name_input)
+        self.ui.set_input_mask(False)
+        self.ui.set_status(self.tr("app.player.setup.status"))
+        self.ui.set_screen(
+            "\n".join(
+                [
+                    self.tr("app.player.setup.title"),
+                    "==========================================",
+                    "",
+                    self.tr("app.player.setup.hint1"),
+                    self.tr("app.player.setup.hint2"),
+                    "",
+                    self.tr("app.player.setup.controls"),
+                ]
+            )
+        )
+
+    def _handle_player_name_input(self, raw: str) -> None:
+        token = raw.strip()
+        lowered = token.lower()
+        if lowered in {"guest", "invitado", "convidado", "skip", "omitir"}:
+            self.config.player_name = ""
+            self.awaiting_player_name = False
+            self.clear_input_handler()
+            self._apply_player_identity()
+            self.ui.set_status(self.tr("ui.help_hint"))
+            self.ui.set_screen(self._welcome_text())
+            self.ui.write(self.tr("app.player.setup.skip"))
+            self._save_config()
+            self._queue_cloud_sync(reason="boot_guest", force=True)
+            return
+
+        name = self._sanitize_player_name(token)
+        if not name:
+            self.ui.write(self.tr("app.player.setup.invalid"))
+            return
+
+        self.config.player_name = name
+        self.awaiting_player_name = False
+        self.clear_input_handler()
+        self._apply_player_identity()
+        self._save_config()
+        self.ui.set_status(self.tr("ui.help_hint"))
+        self.ui.set_screen(self._welcome_text())
+        self.ui.write(self.tr("app.player.setup.saved", name=name))
+        self.ui.push_notification(
+            self.tr("app.player.toast.title"),
+            self.tr("app.player.toast.body", name=name),
+            icon_key="mdi:account",
+        )
+        self._queue_cloud_sync(reason="player_name_set", force=True)
+
     def _welcome_text(self) -> str:
         return "\n".join(
             [
@@ -3100,6 +3618,7 @@ class GethesApp:
                 " \\____|\\___|\\__|_| |_|\\___||___/ ",
                 "",
                 self.tr("app.welcome.subtitle"),
+                self.tr("app.welcome.user", name=self._player_name()),
                 self.tr(
                     "app.welcome.slot",
                     id=self.current_slot.slot_id,
@@ -3119,6 +3638,7 @@ class GethesApp:
                 "- `slots`",
                 "- `slot 1|2|3`",
                 "- `slotname <nombre>`",
+                "- `user <nombre>`",
                 "- `savegame`",
                 "",
                 self.tr("app.welcome.help"),
@@ -3143,6 +3663,7 @@ class GethesApp:
             f"- slots                    : {self.tr('app.help.slots')}",
             f"- slot <1-3>               : {self.tr('app.help.slot')}",
             f"- slotname <nombre>        : {self.tr('app.help.slotname')}",
+            f"- user [nombre|guest]      : {self.tr('app.help.user')}",
             f"- savegame                 : {self.tr('app.help.savegame')}",
             f"- options / opciones       : {self.tr('app.help.options')}",
             f"- doctor [all|audio|update|ui]: {self.tr('app.help.doctor')}",
@@ -3156,6 +3677,7 @@ class GethesApp:
             f"- fonts [filtro]           : {self.tr('app.help.fonts')}",
             f"- lang [auto|es|en|pt]     : {self.tr('app.help.lang')}",
             f"- update ...               : {self.tr('app.help.update')}",
+            f"- assets <status|reload>   : {self.tr('app.help.assets')}",
             f"- mods <status|reload>     : {self.tr('app.help.mods')}",
             f"- sfx                      : {self.tr('app.help.sfx')}",
             f"- save                     : {self.tr('app.help.save')}",
@@ -3176,6 +3698,7 @@ class GethesApp:
         return "\n".join(
             [
                 self.tr("app.options.title"),
+                f"- {self.tr('app.options.player'):13}: {self._player_name()}",
                 f"- {self.tr('app.options.slot'):13}: {self.current_slot.slot_id} ({self.current_slot.route_name})",
                 f"- {self.tr('app.options.bg'):13}: {self.config.bg_color}",
                 f"- {self.tr('app.options.fg'):13}: {self.config.fg_color}",
@@ -3204,6 +3727,8 @@ class GethesApp:
                 f"- {self.tr('app.options.syster_remote'):13}: {remote_state}",
                 f"- {self.tr('app.options.update_auto'):13}: {'ON' if self.config.auto_update_check else 'OFF'}",
                 f"- {self.tr('app.options.update_repo'):13}: {self.update_manager.repo or '-'}",
+                f"- {self.tr('app.options.cloud'):13}: {'ON' if (self.config.cloud_enabled and self.cloud.is_linked()) else 'OFF'}",
+                f"- {self.tr('app.options.cloud_endpoint'):13}: {self.cloud.endpoint or '-'}",
                 f"- {self.tr('app.options.achievements'):13}: {unlocked_count(self.current_slot.flags)}/{len(ACHIEVEMENTS)}",
                 f"- {self.tr('app.options.mods_path'):13}: {self.mods_dir}",
                 f"- {self.tr('app.options.mods_watch'):13}: {'ON' if self.mod_watcher is not None and self.mod_watcher.is_running() else 'OFF'}",

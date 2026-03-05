@@ -75,3 +75,36 @@ Evaluation date: 2026-03-05
    - Why: stronger i18n/l10n support (plural rules, locale-aware formatting, catalog workflows).
    - Impact: higher quality multi-language output as story/UI text grows.
    - Source: https://babel.pocoo.org/
+
+2. `pygame_gui`
+   - Why: mature retained-mode UI toolkit for in-window settings panels, dialogs, and lists without custom widget code.
+   - Impact: faster UX iteration for options/profile screens and fewer custom input edge cases.
+   - Source: https://pygame-gui.readthedocs.io/
+
+3. `PyTMX`
+   - Why: TMX map loading support for authored tilemaps (Tiled), useful for roguelike rooms and handcrafted story spaces.
+   - Impact: cleaner content pipeline; designers can edit maps without touching Python logic.
+   - Source: https://pytmx.readthedocs.io/
+
+4. `pyscroll`
+   - Why: camera + scrolling renderer built for tiled maps in pygame.
+   - Impact: better world rendering quality and less custom camera/render boilerplate.
+   - Source: https://github.com/bitcraft/pyscroll
+
+5. `moderngl`
+   - Why: GPU rendering and post-processing path (bloom, CRT passes, chromatic aberration, vignette) beyond pure software blits.
+   - Impact: large visual ceiling increase for premium feel, but requires careful fallback path and profiling.
+   - Source: https://moderngl.readthedocs.io/
+
+6. `numpy`
+   - Why: high-performance array math for particles, effects fields, and image processing pipelines.
+   - Impact: lower CPU cost for advanced visual effects and deterministic simulation helpers.
+   - Source: https://numpy.org/
+
+## Recommended adoption order
+
+1. `pygame_gui` (low-medium risk, immediate UX gain)
+2. `Babel` (low risk, long-term i18n quality)
+3. `PyTMX` + `pyscroll` (medium risk, large map/content gain)
+4. `numpy` (medium risk, performance gain once effects grow)
+5. `moderngl` (higher risk, highest visual ceiling)

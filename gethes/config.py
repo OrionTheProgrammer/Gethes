@@ -3,6 +3,7 @@
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import json
+import uuid
 
 
 GRAPHICS_LEVELS = {"low", "medium", "high"}
@@ -26,11 +27,16 @@ class GameConfig:
     graphics: str = "medium"
     language: str = "auto"
     active_slot: int = 1
-    syster_mode: str = "off"
+    syster_mode: str = "lite"
     syster_endpoint: str = ""
     update_repo: str = "OrionTheProgrammer/Gethes"
     auto_update_check: bool = True
     ui_scale: float = 1.0
+    player_name: str = ""
+    install_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    cloud_endpoint: str = ""
+    cloud_api_key: str = ""
+    cloud_enabled: bool = False
     freesound_api_key: str = ""
     sfx_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -110,6 +116,28 @@ class ConfigStore:
         ui_scale = payload.get("ui_scale")
         if isinstance(ui_scale, (int, float)) and 0.7 <= float(ui_scale) <= 2.5:
             cfg.ui_scale = float(ui_scale)
+
+        player_name = payload.get("player_name")
+        if isinstance(player_name, str):
+            cfg.player_name = player_name.strip()
+
+        install_id = payload.get("install_id")
+        if isinstance(install_id, str):
+            token = install_id.strip().lower().replace("-", "")
+            if len(token) == 32 and all(ch in "0123456789abcdef" for ch in token):
+                cfg.install_id = token
+
+        cloud_endpoint = payload.get("cloud_endpoint")
+        if isinstance(cloud_endpoint, str):
+            cfg.cloud_endpoint = cloud_endpoint.strip()
+
+        cloud_api_key = payload.get("cloud_api_key")
+        if isinstance(cloud_api_key, str):
+            cfg.cloud_api_key = cloud_api_key.strip()
+
+        cloud_enabled = payload.get("cloud_enabled")
+        if isinstance(cloud_enabled, bool):
+            cfg.cloud_enabled = cloud_enabled
 
         freesound_api_key = payload.get("freesound_api_key")
         if isinstance(freesound_api_key, str):

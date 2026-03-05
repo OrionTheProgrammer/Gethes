@@ -4,6 +4,7 @@ import math
 import random
 import textwrap
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Sequence
 
 import pygame
@@ -19,6 +20,7 @@ except Exception:  # pragma: no cover - optional dependency.
     pytweening = None
 
 from gethes.icon_pack import IconPack
+from gethes.runtime_paths import resource_package_dir
 
 
 @dataclass
@@ -101,8 +103,31 @@ class ConsoleUI:
                 "mdi:power",
                 "mdi:trophy-outline",
                 "mdi:information-outline",
+                "mdi:account",
+                "mdi:wall",
+                "mdi:stairs-up",
+                "mdi:cash",
+                "mdi:flask-round-bottom",
+                "mdi:star-four-points",
+                "mdi:alert-octagram",
+                "mdi:emoticon-devil-outline",
+                "mdi:snake",
+                "mdi:wolf-outline",
+                "mdi:skull",
+                "mdi:close-thick",
+                "mdi:circle-outline",
             ]
         )
+        self._rogue_tile_cache: dict[tuple[object, ...], pygame.Surface] = {}
+        self._rogue_asset_raw_cache: dict[str, pygame.Surface] = {}
+        self._rogue_tiles_dir: Path = resource_package_dir() / "assets" / "rogue"
+        self._snake_tile_cache: dict[tuple[object, ...], pygame.Surface] = {}
+        self._snake_asset_raw_cache: dict[str, pygame.Surface] = {}
+        self._snake_tiles_dir: Path = resource_package_dir() / "assets" / "snake"
+        self._ttt_tile_cache: dict[tuple[object, ...], pygame.Surface] = {}
+        self._ttt_asset_raw_cache: dict[str, pygame.Surface] = {}
+        self._ttt_tiles_dir: Path = resource_package_dir() / "assets" / "ttt"
+        self._layout_rect = pygame.Rect(0, 0, self.width, self.height)
 
         self._refresh_scale(reload_fonts=True)
 
@@ -153,6 +178,9 @@ class ConsoleUI:
         self.brand_font = pygame.font.Font(ui_name, max(28, self._scale_px(62)))
         self.brand_sub_font = pygame.font.Font(ui_name, max(13, self._scale_px(16)))
         self._line_surface_cache = {}
+        self._rogue_tile_cache = {}
+        self._snake_tile_cache = {}
+        self._ttt_tile_cache = {}
         self.icons.clear_scaled_cache()
 
     def set_audio(self, audio_manager: object) -> None:
@@ -482,6 +510,18 @@ class ConsoleUI:
     def set_mode_chip(self, value: str) -> None:
         self.mode_chip_text = value
 
+    def reload_visual_assets(self) -> None:
+        self._rogue_asset_raw_cache = {}
+        self._rogue_tile_cache = {}
+        self._snake_asset_raw_cache = {}
+        self._snake_tile_cache = {}
+        self._ttt_asset_raw_cache = {}
+        self._ttt_tile_cache = {}
+
+    def reload_rogue_assets(self) -> None:
+        # Backward-compatible alias for existing callers.
+        self.reload_visual_assets()
+
     def set_status(self, value: str) -> None:
         if value != self.status_text:
             self.status_flash = min(1.0, self.status_flash + 0.85)
@@ -765,23 +805,31 @@ class ConsoleUI:
         input_h = self._scale_px(46)
         gap = self._scale_px(10)
 
-        header_rect = pygame.Rect(margin + shake_x, margin + shake_y, self.width - (margin * 2), header_h)
+        max_content_w = self.width - (margin * 2)
+        if self.width >= self._scale_px(1380):
+            capped = self._scale_px(1380)
+            max_content_w = min(max_content_w, capped)
+        max_content_w = max(self._scale_px(560), max_content_w)
+        content_x = ((self.width - max_content_w) // 2) + shake_x
+        self._layout_rect = pygame.Rect(content_x, margin + shake_y, max_content_w, self.height - (margin * 2))
+
+        header_rect = pygame.Rect(content_x, margin + shake_y, max_content_w, header_h)
         status_rect = pygame.Rect(
-            margin + shake_x,
+            content_x,
             self.height - margin - status_h + shake_y,
-            self.width - (margin * 2),
+            max_content_w,
             status_h,
         )
         input_rect = pygame.Rect(
-            margin + shake_x,
+            content_x,
             status_rect.top - gap - input_h + shake_y,
-            self.width - (margin * 2),
+            max_content_w,
             input_h,
         )
         output_rect = pygame.Rect(
-            margin + shake_x,
+            content_x,
             header_rect.bottom + gap + shake_y,
-            self.width - (margin * 2),
+            max_content_w,
             input_rect.top - header_rect.bottom - (gap * 2),
         )
         self._apply_panel_entry_animation(header_rect, output_rect, input_rect, status_rect)
@@ -1006,10 +1054,55 @@ class ConsoleUI:
         offset_x = random.randint(-2, 2) if (self.glitch_timer > 0 and allow_glitch) else 0
         offset_y = random.randint(-1, 1) if (self.glitch_timer > 0 and allow_glitch) else 0
 
+        is_rogue_screen = any("ROGUELIKE //" in line for line in self.output_lines[:6])
+        is_snake_screen = any(line.startswith("SNAKE |") for line in self.output_lines[:8])
+        is_ttt_screen = any(
+            ("TIC-TAC-TOE" in line)
+            or ("GATO / TRES EN RAYA" in line)
+            or ("JOGO DA VELHA" in line)
+            for line in self.output_lines[:8]
+        )
         y = rect.y + self._scale_px(8) + offset_y
+        x = rect.x + self._scale_px(10) + offset_x
         for line in visible:
+            if is_rogue_screen and self._draw_rogue_tile_row(
+                line=line,
+                x=x,
+                y=y,
+                char_w=char_w,
+                line_h=line_h,
+            ):
+                y += line_h
+                continue
+            if is_snake_screen and self._draw_snake_tile_row(
+                line=line,
+                x=x,
+                y=y,
+                char_w=char_w,
+                line_h=line_h,
+            ):
+                y += line_h
+                continue
+            if is_ttt_screen and self._draw_ttt_tile_row(
+                line=line,
+                x=x,
+                y=y,
+                char_w=char_w,
+                line_h=line_h,
+            ):
+                y += line_h
+                continue
+            if is_ttt_screen and self._draw_ttt_separator_row(
+                line=line,
+                x=x,
+                y=y,
+                char_w=char_w,
+                line_h=line_h,
+            ):
+                y += line_h
+                continue
             text_surface = self._render_cached_line(line)
-            self.screen.blit(text_surface, (rect.x + self._scale_px(10) + offset_x, y))
+            self.screen.blit(text_surface, (x, y))
             y += line_h
 
         if self.graphics_level in {"medium", "high"}:
@@ -1025,6 +1118,613 @@ class ConsoleUI:
                 border_radius=self._scale_px(2),
             )
             self.screen.blit(sweep_layer, (rect.x + self._scale_px(5), sweep_y))
+
+    def _draw_rogue_tile_row(
+        self,
+        line: str,
+        x: int,
+        y: int,
+        char_w: int,
+        line_h: int,
+    ) -> bool:
+        if len(line) < 3 or not line.startswith("|") or not line.endswith("|"):
+            return False
+
+        content = line[1:-1]
+        if not content:
+            return False
+
+        allowed = set("#.@gswB$!*^> ")
+        for ch in content:
+            if ch not in allowed:
+                return False
+
+        tile_h = max(1, line_h - 1)
+        for idx, ch in enumerate(content):
+            tile_surface = self._get_rogue_tile_surface(ch, char_w, tile_h)
+            self.screen.blit(tile_surface, (x + (idx * char_w), y))
+        return True
+
+    def _get_rogue_tile_surface(self, symbol: str, width: int, height: int) -> pygame.Surface:
+        key = (
+            symbol,
+            width,
+            height,
+            self.bg_color.r,
+            self.bg_color.g,
+            self.bg_color.b,
+            self.fg_color.r,
+            self.fg_color.g,
+            self.fg_color.b,
+            self.accent_color.r,
+            self.accent_color.g,
+            self.accent_color.b,
+        )
+        cached = self._rogue_tile_cache.get(key)
+        if cached is not None:
+            return cached
+
+        file_tile = self._get_rogue_file_tile(symbol, width, height)
+        if file_tile is not None:
+            self._rogue_tile_cache[key] = file_tile
+            return file_tile
+
+        style = self._rogue_tile_style(symbol)
+        surface = pygame.Surface((max(1, width), max(1, height)), pygame.SRCALPHA)
+        surface.fill(style["bg"])
+        pygame.draw.rect(
+            surface,
+            style["border"],
+            surface.get_rect(),
+            width=1,
+            border_radius=max(2, min(width, height) // 6),
+        )
+
+        icon_key = style["icon"]
+        icon_size = int(min(width, height) * 0.84)
+        icon = None
+        if icon_key:
+            icon = self.icons.get_icon(icon_key, max(10, icon_size), style["icon_color"])
+
+        if icon is not None:
+            surface.blit(
+                icon,
+                (
+                    (width - icon.get_width()) // 2,
+                    (height - icon.get_height()) // 2,
+                ),
+            )
+        else:
+            glyph = style["glyph"]
+            if glyph:
+                tile_font_size = max(9, min(height - 1, int(height * 0.74)))
+                font_name = pygame.font.match_font(self.font_family) or pygame.font.match_font("consolas")
+                tile_font = pygame.font.Font(font_name, tile_font_size)
+                glyph_surface = tile_font.render(glyph, True, style["icon_color"])
+                surface.blit(
+                    glyph_surface,
+                    (
+                        (width - glyph_surface.get_width()) // 2,
+                        (height - glyph_surface.get_height()) // 2,
+                    ),
+                )
+
+        self._rogue_tile_cache[key] = surface
+        return surface
+
+    def _get_rogue_file_tile(self, symbol: str, width: int, height: int) -> pygame.Surface | None:
+        file_map = {
+            " ": "fog.png",
+            "#": "wall.png",
+            ".": "floor.png",
+            "@": "player.png",
+            ">": "exit.png",
+            "$": "gold.png",
+            "!": "potion.png",
+            "*": "relic.png",
+            "^": "trap.png",
+            "g": "enemy_g.png",
+            "s": "enemy_s.png",
+            "w": "enemy_w.png",
+            "B": "enemy_b.png",
+        }
+        file_name = file_map.get(symbol, "")
+        if not file_name:
+            return None
+
+        raw = self._rogue_asset_raw_cache.get(file_name)
+        if raw is None:
+            path = self._rogue_tiles_dir / file_name
+            if not path.exists():
+                return None
+            try:
+                loaded = pygame.image.load(str(path))
+                raw = loaded.convert_alpha() if loaded.get_alpha() is not None else loaded.convert()
+            except Exception:
+                return None
+            self._rogue_asset_raw_cache[file_name] = raw
+
+        if raw.get_width() == width and raw.get_height() == height:
+            return raw.copy()
+        return pygame.transform.smoothscale(raw, (max(1, width), max(1, height)))
+
+    def _rogue_tile_style(self, symbol: str) -> dict[str, object]:
+        floor_bg = self._mix(self.bg_color, self.panel_color, 0.62)
+        wall_bg = self._mix(self.bg_color, self.dim_color, 0.34)
+        fog_bg = self._mix(self.bg_color, pygame.Color("#000000"), 0.48)
+
+        base: dict[str, object] = {
+            "bg": floor_bg,
+            "border": self._mix(floor_bg, self.accent_color, 0.24),
+            "icon": "",
+            "icon_color": self.fg_color,
+            "glyph": symbol,
+        }
+
+        styles: dict[str, dict[str, object]] = {
+            " ": {
+                "bg": fog_bg,
+                "border": self._mix(fog_bg, self.bg_color, 0.28),
+                "icon": "",
+                "icon_color": self.dim_color,
+                "glyph": "",
+            },
+            "#": {
+                "bg": wall_bg,
+                "border": self._mix(wall_bg, self.accent_color, 0.2),
+                "icon": "mdi:wall",
+                "icon_color": self._mix(self.fg_color, self.dim_color, 0.38),
+                "glyph": "#",
+            },
+            ".": {
+                "bg": floor_bg,
+                "border": self._mix(floor_bg, self.accent_color, 0.16),
+                "icon": "",
+                "icon_color": self.dim_color,
+                "glyph": "",
+            },
+            "@": {
+                "bg": self._mix(self.accent_color, self.bg_color, 0.35),
+                "border": self._mix(self.accent_color, self.fg_color, 0.35),
+                "icon": "mdi:account",
+                "icon_color": self.fg_color,
+                "glyph": "@",
+            },
+            ">": {
+                "bg": self._mix(self.accent_color, floor_bg, 0.28),
+                "border": self._mix(self.accent_color, self.fg_color, 0.42),
+                "icon": "mdi:stairs-up",
+                "icon_color": self._mix(self.fg_color, pygame.Color("#FFFFFF"), 0.2),
+                "glyph": ">",
+            },
+            "$": {
+                "bg": self._mix(pygame.Color("#8A6A1E"), floor_bg, 0.36),
+                "border": self._mix(pygame.Color("#D8AF45"), self.accent_color, 0.3),
+                "icon": "mdi:cash",
+                "icon_color": pygame.Color("#F7D774"),
+                "glyph": "$",
+            },
+            "!": {
+                "bg": self._mix(pygame.Color("#1E5B76"), floor_bg, 0.34),
+                "border": self._mix(pygame.Color("#59C8F2"), self.accent_color, 0.3),
+                "icon": "mdi:flask-round-bottom",
+                "icon_color": pygame.Color("#8DDCFF"),
+                "glyph": "!",
+            },
+            "*": {
+                "bg": self._mix(pygame.Color("#4B3A73"), floor_bg, 0.34),
+                "border": self._mix(pygame.Color("#D6C5FF"), self.accent_color, 0.3),
+                "icon": "mdi:star-four-points",
+                "icon_color": pygame.Color("#E2D4FF"),
+                "glyph": "*",
+            },
+            "^": {
+                "bg": self._mix(pygame.Color("#742727"), floor_bg, 0.34),
+                "border": self._mix(pygame.Color("#F06363"), self.accent_color, 0.3),
+                "icon": "mdi:alert-octagram",
+                "icon_color": pygame.Color("#FF8A8A"),
+                "glyph": "^",
+            },
+            "g": {
+                "bg": self._mix(pygame.Color("#2D5D2F"), floor_bg, 0.38),
+                "border": self._mix(pygame.Color("#6BC070"), self.accent_color, 0.22),
+                "icon": "mdi:emoticon-devil-outline",
+                "icon_color": pygame.Color("#9AE19E"),
+                "glyph": "g",
+            },
+            "s": {
+                "bg": self._mix(pygame.Color("#315E2F"), floor_bg, 0.38),
+                "border": self._mix(pygame.Color("#7ED778"), self.accent_color, 0.22),
+                "icon": "mdi:snake",
+                "icon_color": pygame.Color("#ABF09F"),
+                "glyph": "s",
+            },
+            "w": {
+                "bg": self._mix(pygame.Color("#564039"), floor_bg, 0.38),
+                "border": self._mix(pygame.Color("#D4AA88"), self.accent_color, 0.22),
+                "icon": "mdi:wolf-outline",
+                "icon_color": pygame.Color("#E8C6A8"),
+                "glyph": "w",
+            },
+            "B": {
+                "bg": self._mix(pygame.Color("#5E1E26"), floor_bg, 0.3),
+                "border": self._mix(pygame.Color("#F16A7A"), self.accent_color, 0.28),
+                "icon": "mdi:skull",
+                "icon_color": pygame.Color("#FFC4CC"),
+                "glyph": "B",
+            },
+        }
+        return styles.get(symbol, base)
+
+    def _draw_snake_tile_row(
+        self,
+        line: str,
+        x: int,
+        y: int,
+        char_w: int,
+        line_h: int,
+    ) -> bool:
+        if len(line) < 3 or not line.startswith("|") or not line.endswith("|"):
+            return False
+
+        content = line[1:-1]
+        if not content:
+            return False
+
+        allowed = set("o@* ")
+        if any(ch not in allowed for ch in content):
+            return False
+
+        tile_h = max(1, line_h - 1)
+        for idx, ch in enumerate(content):
+            tile_surface = self._get_snake_tile_surface(ch, char_w, tile_h)
+            self.screen.blit(tile_surface, (x + (idx * char_w), y))
+        return True
+
+    def _get_snake_tile_surface(self, symbol: str, width: int, height: int) -> pygame.Surface:
+        phase_bucket = (int(self.animation_phase * 12.0) % 8) if symbol == "*" else 0
+        key = (
+            symbol,
+            width,
+            height,
+            self.bg_color.r,
+            self.bg_color.g,
+            self.bg_color.b,
+            self.fg_color.r,
+            self.fg_color.g,
+            self.fg_color.b,
+            self.accent_color.r,
+            self.accent_color.g,
+            self.accent_color.b,
+            phase_bucket,
+        )
+        cached = self._snake_tile_cache.get(key)
+        if cached is not None:
+            return cached
+
+        file_tile = self._get_snake_file_tile(symbol, width, height)
+        if file_tile is not None:
+            if symbol == "*":
+                pulse = 0.88 + (0.12 * (0.5 + (0.5 * math.sin(self.animation_phase * 6.0))))
+                tw = max(1, int(width * pulse))
+                th = max(1, int(height * pulse))
+                lit = pygame.transform.smoothscale(file_tile, (tw, th))
+                surface = pygame.Surface((width, height), pygame.SRCALPHA)
+                surface.blit(lit, ((width - tw) // 2, (height - th) // 2))
+            else:
+                surface = file_tile
+            self._snake_tile_cache[key] = surface
+            return surface
+
+        style = self._snake_tile_style(symbol)
+        surface = pygame.Surface((max(1, width), max(1, height)), pygame.SRCALPHA)
+        surface.fill(style["bg"])
+        pygame.draw.rect(
+            surface,
+            style["border"],
+            surface.get_rect(),
+            width=1,
+            border_radius=max(2, min(width, height) // 5),
+        )
+
+        icon_key = style["icon"]
+        icon_size = int(min(width, height) * 0.8)
+        icon = None
+        if icon_key:
+            icon = self.icons.get_icon(icon_key, max(9, icon_size), style["icon_color"])
+        if icon is not None:
+            surface.blit(
+                icon,
+                (
+                    (width - icon.get_width()) // 2,
+                    (height - icon.get_height()) // 2,
+                ),
+            )
+        else:
+            glyph = style["glyph"]
+            if glyph:
+                tile_font_size = max(9, min(height - 1, int(height * 0.72)))
+                font_name = pygame.font.match_font(self.font_family) or pygame.font.match_font("consolas")
+                tile_font = pygame.font.Font(font_name, tile_font_size)
+                glyph_surface = tile_font.render(glyph, True, style["icon_color"])
+                surface.blit(
+                    glyph_surface,
+                    (
+                        (width - glyph_surface.get_width()) // 2,
+                        (height - glyph_surface.get_height()) // 2,
+                    ),
+                )
+
+        self._snake_tile_cache[key] = surface
+        return surface
+
+    def _get_snake_file_tile(self, symbol: str, width: int, height: int) -> pygame.Surface | None:
+        file_map = {
+            " ": "floor.png",
+            "o": "body.png",
+            "@": "head.png",
+            "*": "food.png",
+        }
+        file_name = file_map.get(symbol, "")
+        if not file_name:
+            return None
+
+        raw = self._snake_asset_raw_cache.get(file_name)
+        if raw is None:
+            path = self._snake_tiles_dir / file_name
+            if not path.exists():
+                return None
+            try:
+                loaded = pygame.image.load(str(path))
+                raw = loaded.convert_alpha() if loaded.get_alpha() is not None else loaded.convert()
+            except Exception:
+                return None
+            self._snake_asset_raw_cache[file_name] = raw
+
+        if raw.get_width() == width and raw.get_height() == height:
+            return raw.copy()
+        return pygame.transform.smoothscale(raw, (max(1, width), max(1, height)))
+
+    def _snake_tile_style(self, symbol: str) -> dict[str, object]:
+        floor_bg = self._mix(self.bg_color, self.panel_color, 0.6)
+        base: dict[str, object] = {
+            "bg": floor_bg,
+            "border": self._mix(floor_bg, self.accent_color, 0.18),
+            "icon": "",
+            "icon_color": self.dim_color,
+            "glyph": "",
+        }
+
+        styles: dict[str, dict[str, object]] = {
+            " ": base,
+            "o": {
+                "bg": self._mix(pygame.Color("#1D5F2A"), floor_bg, 0.38),
+                "border": self._mix(pygame.Color("#76D66D"), self.accent_color, 0.22),
+                "icon": "",
+                "icon_color": pygame.Color("#9AF58C"),
+                "glyph": "o",
+            },
+            "@": {
+                "bg": self._mix(pygame.Color("#2C7A36"), floor_bg, 0.32),
+                "border": self._mix(pygame.Color("#A5FF87"), self.accent_color, 0.2),
+                "icon": "mdi:snake",
+                "icon_color": pygame.Color("#CAFFB5"),
+                "glyph": "@",
+            },
+            "*": {
+                "bg": self._mix(pygame.Color("#7C2D18"), floor_bg, 0.34),
+                "border": self._mix(pygame.Color("#FFB169"), self.accent_color, 0.28),
+                "icon": "",
+                "icon_color": pygame.Color("#FFD58B"),
+                "glyph": "*",
+            },
+        }
+        return styles.get(symbol, base)
+
+    def _draw_ttt_tile_row(
+        self,
+        line: str,
+        x: int,
+        y: int,
+        char_w: int,
+        line_h: int,
+    ) -> bool:
+        parts = line.split("|")
+        if len(parts) != 3:
+            return False
+
+        cells = [part.strip() for part in parts]
+        if len(cells) != 3:
+            return False
+        if any((len(value) != 1) for value in cells):
+            return False
+        if any(value not in "XO123456789" for value in cells):
+            return False
+
+        cell_w = max(char_w * 3, self._scale_px(22))
+        cell_h = max(1, line_h - 1)
+        sep_w = char_w
+        for col, value in enumerate(cells):
+            tile = self._get_ttt_cell_surface(value, cell_w, cell_h)
+            cx = x + (col * (cell_w + sep_w))
+            self.screen.blit(tile, (cx, y))
+            if col < 2:
+                sep_x = cx + cell_w + (sep_w // 2)
+                sep_color = self._mix(self.accent_color, self.fg_color, 0.2)
+                pygame.draw.line(
+                    self.screen,
+                    sep_color,
+                    (sep_x, y + self._scale_px(2)),
+                    (sep_x, y + cell_h - self._scale_px(2)),
+                    width=max(1, self._scale_px(1)),
+                )
+        return True
+
+    def _draw_ttt_separator_row(
+        self,
+        line: str,
+        x: int,
+        y: int,
+        char_w: int,
+        line_h: int,
+    ) -> bool:
+        compact = line.replace(" ", "")
+        if compact != "---+---+---":
+            return False
+
+        cell_w = max(char_w * 3, self._scale_px(22))
+        sep_w = char_w
+        color = self._mix(self.accent_color, self.fg_color, 0.32)
+        y_line = y + (line_h // 2)
+        for col in range(3):
+            sx = x + (col * (cell_w + sep_w))
+            ex = sx + cell_w
+            pygame.draw.line(self.screen, color, (sx, y_line), (ex, y_line), width=max(1, self._scale_px(1)))
+        return True
+
+    def _get_ttt_cell_surface(self, symbol: str, width: int, height: int) -> pygame.Surface:
+        key = (
+            symbol,
+            width,
+            height,
+            self.bg_color.r,
+            self.bg_color.g,
+            self.bg_color.b,
+            self.fg_color.r,
+            self.fg_color.g,
+            self.fg_color.b,
+            self.accent_color.r,
+            self.accent_color.g,
+            self.accent_color.b,
+        )
+        cached = self._ttt_tile_cache.get(key)
+        if cached is not None:
+            return cached
+
+        file_tile = self._get_ttt_file_tile(symbol, width, height)
+        if file_tile is not None:
+            self._ttt_tile_cache[key] = file_tile
+            return file_tile
+
+        style = self._ttt_cell_style(symbol)
+        surface = pygame.Surface((max(1, width), max(1, height)), pygame.SRCALPHA)
+        surface.fill(style["bg"])
+        pygame.draw.rect(
+            surface,
+            style["border"],
+            surface.get_rect(),
+            width=1,
+            border_radius=max(2, min(width, height) // 5),
+        )
+
+        if symbol in {"X", "O"}:
+            icon = self.icons.get_icon(style["icon"], max(10, int(min(width, height) * 0.68)), style["icon_color"])
+            if icon is not None:
+                surface.blit(
+                    icon,
+                    (
+                        (width - icon.get_width()) // 2,
+                        (height - icon.get_height()) // 2,
+                    ),
+                )
+            else:
+                mark_font_size = max(11, min(height - 1, int(height * 0.68)))
+                font_name = pygame.font.match_font(self.font_family) or pygame.font.match_font("consolas")
+                mark_font = pygame.font.Font(font_name, mark_font_size)
+                mark = mark_font.render(symbol, True, style["icon_color"])
+                surface.blit(
+                    mark,
+                    (
+                        (width - mark.get_width()) // 2,
+                        (height - mark.get_height()) // 2,
+                    ),
+                )
+        elif symbol.isdigit():
+            num_font_size = max(10, min(height - 1, int(height * 0.58)))
+            font_name = pygame.font.match_font(self.font_family) or pygame.font.match_font("consolas")
+            num_font = pygame.font.Font(font_name, num_font_size)
+            num_surface = num_font.render(symbol, True, style["icon_color"])
+            surface.blit(
+                num_surface,
+                (
+                    (width - num_surface.get_width()) // 2,
+                    (height - num_surface.get_height()) // 2,
+                ),
+            )
+
+        self._ttt_tile_cache[key] = surface
+        return surface
+
+    def _get_ttt_file_tile(self, symbol: str, width: int, height: int) -> pygame.Surface | None:
+        file_map = {
+            "X": "x.png",
+            "O": "o.png",
+        }
+        file_name = file_map.get(symbol, "empty.png")
+
+        raw = self._ttt_asset_raw_cache.get(file_name)
+        if raw is None:
+            path = self._ttt_tiles_dir / file_name
+            if not path.exists():
+                return None
+            try:
+                loaded = pygame.image.load(str(path))
+                raw = loaded.convert_alpha() if loaded.get_alpha() is not None else loaded.convert()
+            except Exception:
+                return None
+            self._ttt_asset_raw_cache[file_name] = raw
+
+        if raw.get_width() == width and raw.get_height() == height:
+            surface = raw.copy()
+        else:
+            surface = pygame.transform.smoothscale(raw, (max(1, width), max(1, height)))
+
+        if symbol.isdigit():
+            num_font_size = max(10, min(height - 1, int(height * 0.58)))
+            font_name = pygame.font.match_font(self.font_family) or pygame.font.match_font("consolas")
+            num_font = pygame.font.Font(font_name, num_font_size)
+            num_surface = num_font.render(symbol, True, self._mix(self.dim_color, self.fg_color, 0.24))
+            surface.blit(
+                num_surface,
+                (
+                    (width - num_surface.get_width()) // 2,
+                    (height - num_surface.get_height()) // 2,
+                ),
+            )
+        return surface
+
+    def _ttt_cell_style(self, symbol: str) -> dict[str, object]:
+        floor_bg = self._mix(self.bg_color, self.panel_color, 0.6)
+        base: dict[str, object] = {
+            "bg": floor_bg,
+            "border": self._mix(floor_bg, self.accent_color, 0.2),
+            "icon": "mdi:circle-outline",
+            "icon_color": self.dim_color,
+        }
+
+        styles: dict[str, dict[str, object]] = {
+            "X": {
+                "bg": self._mix(pygame.Color("#12253A"), floor_bg, 0.35),
+                "border": self._mix(pygame.Color("#73B8FF"), self.accent_color, 0.26),
+                "icon": "mdi:close-thick",
+                "icon_color": pygame.Color("#AED9FF"),
+            },
+            "O": {
+                "bg": self._mix(pygame.Color("#1A2A18"), floor_bg, 0.35),
+                "border": self._mix(pygame.Color("#8AE58D"), self.accent_color, 0.22),
+                "icon": "mdi:circle-outline",
+                "icon_color": pygame.Color("#BEF6B5"),
+            },
+        }
+
+        if symbol.isdigit():
+            return {
+                "bg": self._mix(floor_bg, self.bg_color, 0.2),
+                "border": self._mix(self.accent_color, self.bg_color, 0.65),
+                "icon": "",
+                "icon_color": self._mix(self.dim_color, self.fg_color, 0.32),
+            }
+        return styles.get(symbol, base)
 
     def _draw_input(self, rect: pygame.Rect) -> None:
         prompt_pulse = 0.65 + (0.35 * (0.5 + 0.5 * math.sin((self.animation_phase * 3.4) + 0.2)))
@@ -1247,7 +1947,8 @@ class ConsoleUI:
             return
 
         margin = self._scale_px(14)
-        width = min(self._scale_px(430), int(self.width * 0.43))
+        container = self._layout_rect if self._layout_rect.width > 0 else pygame.Rect(0, 0, self.width, self.height)
+        width = min(self._scale_px(430), int(container.width * 0.45))
         width = max(self._scale_px(260), width)
         y = margin + self._scale_px(4)
         spacing = self._scale_px(8)
@@ -1270,7 +1971,8 @@ class ConsoleUI:
             if message_surface is not None:
                 height += message_surface.get_height() + self._scale_px(4)
 
-            x = self.width - width - margin + offset
+            right_edge = container.right - margin
+            x = right_edge - width + offset
             card = pygame.Surface((width, height), pygame.SRCALPHA)
 
             panel_rgba = (self.panel_color.r, self.panel_color.g, self.panel_color.b, int(alpha * 0.9))

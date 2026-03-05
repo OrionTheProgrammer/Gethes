@@ -74,6 +74,21 @@ ACHIEVEMENTS: tuple[AchievementDef, ...] = (
         desc_key="achievement.codebreaker_win.desc",
     ),
     AchievementDef(
+        achievement_id="rogue_first_run",
+        title_key="achievement.rogue_first_run.title",
+        desc_key="achievement.rogue_first_run.desc",
+    ),
+    AchievementDef(
+        achievement_id="rogue_depth_3",
+        title_key="achievement.rogue_depth_3.title",
+        desc_key="achievement.rogue_depth_3.desc",
+    ),
+    AchievementDef(
+        achievement_id="rogue_victory",
+        title_key="achievement.rogue_victory.title",
+        desc_key="achievement.rogue_victory.desc",
+    ),
+    AchievementDef(
         achievement_id="secret_echo",
         title_key="achievement.secret_echo.title",
         desc_key="achievement.secret_echo.desc",
