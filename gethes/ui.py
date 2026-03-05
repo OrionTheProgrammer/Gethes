@@ -4,9 +4,19 @@ import math
 import random
 import textwrap
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Sequence
 
 import pygame
+
+try:
+    import pygame_menu
+except Exception:  # pragma: no cover - optional dependency.
+    pygame_menu = None
+
+try:
+    import pytweening
+except Exception:  # pragma: no cover - optional dependency.
+    pytweening = None
 
 from gethes.icon_pack import IconPack
 
@@ -101,6 +111,10 @@ class ConsoleUI:
         self.idle_seconds = 35.0
         self.animation_phase = 0.0
         self.glitch_timer = 0.0
+        self.session_elapsed = 0.0
+        self.panel_intro_duration = 1.15
+        self.command_flash = 0.0
+        self.typing_glow = 0.0
         self.intro_active = False
         self.intro_elapsed = 0.0
         self.intro_duration = 2.6
@@ -158,6 +172,7 @@ class ConsoleUI:
         while self.running:
             dt = self.clock.tick(self.target_fps) / 1000.0
             self.animation_phase += dt
+            self.session_elapsed += dt
             self.cursor_timer += dt
             if self.cursor_timer >= 0.55:
                 self.cursor_timer = 0.0
@@ -165,6 +180,10 @@ class ConsoleUI:
 
             if self.glitch_timer > 0.0:
                 self.glitch_timer = max(0.0, self.glitch_timer - dt)
+            if self.command_flash > 0.0:
+                self.command_flash = max(0.0, self.command_flash - (dt * 1.8))
+            if self.typing_glow > 0.0:
+                self.typing_glow = max(0.0, self.typing_glow - (dt * 2.1))
 
             self._update_notifications(dt)
 
@@ -234,6 +253,7 @@ class ConsoleUI:
         if event.key == pygame.K_BACKSPACE:
             if self.input_buffer:
                 self.input_buffer = self.input_buffer[:-1]
+                self.typing_glow = min(1.0, self.typing_glow + 0.08)
                 self._play_sound("typing")
             return
 
@@ -251,6 +271,7 @@ class ConsoleUI:
         if event.unicode and event.unicode >= " ":
             if len(self.input_buffer) < 280:
                 self.input_buffer += event.unicode
+                self.typing_glow = min(1.0, self.typing_glow + 0.14)
                 self._play_sound("typing")
 
     def _toggle_fullscreen(self) -> None:
@@ -289,6 +310,7 @@ class ConsoleUI:
     def _submit_command(self) -> None:
         raw = self.input_buffer
         self.input_buffer = ""
+        self.command_flash = 1.0
 
         if raw.strip():
             self.history.append(raw)
@@ -399,6 +421,76 @@ class ConsoleUI:
 
     def set_status(self, value: str) -> None:
         self.status_text = value
+
+    def supports_visual_menu(self) -> bool:
+        return pygame_menu is not None
+
+    def open_visual_menu(
+        self,
+        title: str,
+        items: Sequence[tuple[str, str]],
+        back_label: str,
+    ) -> str | None:
+        if pygame_menu is None or not self.running:
+            return None
+
+        result: dict[str, str | None] = {"command": None}
+        accent = (self.accent_color.r, self.accent_color.g, self.accent_color.b)
+        foreground = (self.fg_color.r, self.fg_color.g, self.fg_color.b)
+        background = (self.bg_color.r, self.bg_color.g, self.bg_color.b)
+
+        theme = pygame_menu.themes.THEME_DARK.copy()
+        theme.background_color = background
+        theme.selection_color = accent
+        theme.title_background_color = background
+        theme.title_font_color = foreground
+        theme.widget_font_color = foreground
+        try:
+            theme.widget_selection_effect = pygame_menu.widgets.LeftArrowSelection(arrow_size=(10, 14))
+        except Exception:
+            pass
+        theme.widget_margin = (0, 7)
+        theme.scrollbar_color = accent
+        theme.scrollbar_slider_color = foreground
+
+        menu_width = min(self.width - self._scale_px(80), self._scale_px(640))
+        menu_height = min(self.height - self._scale_px(80), self._scale_px(520))
+
+        menu = pygame_menu.Menu(
+            title=title,
+            width=max(self._scale_px(360), menu_width),
+            height=max(self._scale_px(300), menu_height),
+            theme=theme,
+        )
+
+        def select_command(command_value: str | None = None) -> None:
+            result["command"] = command_value
+            menu.disable()
+
+        for label, command in items:
+            menu.add.button(label, select_command, command)
+        menu.add.button(back_label, select_command, None)
+
+        while self.running and result["command"] is None and menu.is_enabled():
+            dt = self.clock.tick(self.target_fps) / 1000.0
+            self.animation_phase += dt
+            events = pygame.event.get()
+            for event in events:
+                if event.type == pygame.QUIT:
+                    self._close_requested()
+                    return None
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    menu.disable()
+                    return None
+                if event.type in {pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN}:
+                    self._register_activity()
+
+            self._draw_background()
+            menu.update(events)
+            menu.draw(self.screen)
+            pygame.display.flip()
+
+        return result["command"]
 
     def set_key_handler(self, handler: Callable[[str], None] | None) -> None:
         self.key_handler = handler
@@ -581,6 +673,7 @@ class ConsoleUI:
             self.width - (margin * 2),
             input_rect.top - header_rect.bottom - (gap * 2),
         )
+        self._apply_panel_entry_animation(header_rect, output_rect, input_rect, status_rect)
 
         self._draw_panel(output_rect)
         self._draw_panel(input_rect)
@@ -608,6 +701,26 @@ class ConsoleUI:
             y3 = int((0.5 + 0.5 * math.sin((self.animation_phase * 1.25) + 0.4)) * max(1, self.height - 1))
             pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.58), (0, y3), (self.width, y3), 1)
 
+        if self.graphics_level in {"medium", "high"}:
+            particle_count = 10 if self.graphics_level == "medium" else 18
+            particle_color = self._mix(self.accent_color, self.fg_color, 0.25)
+            for idx in range(particle_count):
+                travel_x = (idx * 131.0) + (self.animation_phase * (22.0 + (idx % 4) * 6.0))
+                travel_y = (idx * 79.0) + (self.animation_phase * (17.0 + (idx % 3) * 5.0))
+                wobble = math.sin((self.animation_phase * 0.9) + (idx * 0.67)) * 22.0
+                px = int(travel_x % max(1, self.width))
+                py = int((travel_y + wobble) % max(1, self.height))
+                radius = 1 if (idx % 5) else 2
+                alpha = 35 if radius == 1 else 52
+                layer = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+                pygame.draw.circle(
+                    layer,
+                    (particle_color.r, particle_color.g, particle_color.b, alpha),
+                    (radius * 2, radius * 2),
+                    radius,
+                )
+                self.screen.blit(layer, (px - (radius * 2), py - (radius * 2)))
+
     def _draw_panel(self, rect: pygame.Rect) -> None:
         radius = self._scale_px(9)
         shadow = pygame.Rect(rect.x, rect.y + self._scale_px(2), rect.width, rect.height)
@@ -619,9 +732,20 @@ class ConsoleUI:
         )
         pygame.draw.rect(self.screen, self.panel_color, rect, border_radius=radius)
         pygame.draw.rect(self.screen, self.accent_color, rect, width=1, border_radius=radius)
+        if self.command_flash > 0.0:
+            pulse = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2)
+            thickness = 1 + int(self.command_flash * 1.8)
+            pygame.draw.rect(
+                self.screen,
+                pulse,
+                rect.inflate(self._scale_px(2), self._scale_px(2)),
+                width=thickness,
+                border_radius=radius,
+            )
 
     def _draw_header(self, rect: pygame.Rect) -> None:
         pulse = 0.45 + 0.4 * (0.5 + 0.5 * math.sin(self.animation_phase * 2.4))
+        pulse += self.command_flash * 0.45
         glow = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.15 * pulse)
 
         title_x = rect.x + self._scale_px(12)
@@ -703,9 +827,44 @@ class ConsoleUI:
                 width=max(1, self._scale_px(2)),
             )
 
+        glow_ratio = max(self.typing_glow, self.command_flash * 0.5)
+        if glow_ratio > 0.0:
+            glow_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.32)
+            glow_alpha = int(120 * min(1.0, glow_ratio))
+            glow_surface = pygame.Surface((rect.width - self._scale_px(16), self._scale_px(4)), pygame.SRCALPHA)
+            pygame.draw.rect(
+                glow_surface,
+                (glow_color.r, glow_color.g, glow_color.b, glow_alpha),
+                glow_surface.get_rect(),
+                border_radius=self._scale_px(4),
+            )
+            self.screen.blit(
+                glow_surface,
+                (rect.x + self._scale_px(8), rect.bottom - self._scale_px(8)),
+            )
+
     def _draw_status(self, rect: pygame.Rect) -> None:
         status_surface = self.status_font.render(self.status_text, True, self.dim_color)
         self.screen.blit(status_surface, (rect.x + self._scale_px(10), rect.y + self._scale_px(6)))
+
+    def _apply_panel_entry_animation(
+        self,
+        header_rect: pygame.Rect,
+        output_rect: pygame.Rect,
+        input_rect: pygame.Rect,
+        status_rect: pygame.Rect,
+    ) -> None:
+        if self.session_elapsed >= self.panel_intro_duration:
+            return
+
+        progress = self._ease_out_cubic(self.session_elapsed / max(0.01, self.panel_intro_duration))
+        remaining = 1.0 - progress
+        max_offset = self._scale_px(28)
+
+        header_rect.y -= int(max_offset * remaining)
+        output_rect.y += int((max_offset * 0.35) * remaining)
+        input_rect.y += int((max_offset * 0.7) * remaining)
+        status_rect.y += int(max_offset * remaining)
 
     def _draw_intro(self) -> None:
         base = pygame.Color("#030508")
@@ -799,6 +958,21 @@ class ConsoleUI:
         fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_w, bar_rect.height)
         pygame.draw.rect(self.screen, glow, fill_rect, border_radius=self._scale_px(8))
         pygame.draw.rect(self.screen, self._mix(glow, pygame.Color("#FFFFFF"), 0.18), bar_rect, width=1, border_radius=self._scale_px(8))
+        if fill_w > self._scale_px(12):
+            sheen_w = self._scale_px(26)
+            sweep = int((self.animation_phase * self._scale_px(170)) % max(1, fill_rect.width + sheen_w))
+            sheen_rect = pygame.Rect(fill_rect.x + sweep - sheen_w, fill_rect.y, sheen_w, fill_rect.height)
+            clipped = sheen_rect.clip(fill_rect)
+            if clipped.width > 0 and clipped.height > 0:
+                sheen = pygame.Surface((clipped.width, clipped.height), pygame.SRCALPHA)
+                sheen_color = self._mix(glow, pygame.Color("#FFFFFF"), 0.45)
+                pygame.draw.rect(
+                    sheen,
+                    (sheen_color.r, sheen_color.g, sheen_color.b, 88),
+                    sheen.get_rect(),
+                    border_radius=self._scale_px(6),
+                )
+                self.screen.blit(sheen, clipped.topleft)
 
     def _draw_notifications(self) -> None:
         if not self.notifications:
@@ -811,7 +985,7 @@ class ConsoleUI:
         spacing = self._scale_px(8)
         title_color = self._mix(self.fg_color, pygame.Color("#FFFFFF"), 0.2)
 
-        for toast in reversed(self.notifications):
+        for idx, toast in enumerate(reversed(self.notifications)):
             alpha, offset = self._toast_animation(toast)
             if alpha <= 0:
                 continue
@@ -852,7 +1026,20 @@ class ConsoleUI:
                 ty += title_surface.get_height() + self._scale_px(4)
                 card.blit(message_surface, (text_x, ty))
 
-            self.screen.blit(card, (x, y))
+            remaining_ratio = max(0.0, min(1.0, (toast.lifetime - toast.age) / max(0.01, toast.lifetime)))
+            progress_w = max(0, int((width - (inner_pad * 2)) * remaining_ratio))
+            if progress_w > 0:
+                bar_rect = pygame.Rect(inner_pad, height - self._scale_px(4), progress_w, self._scale_px(2))
+                bar_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.1)
+                pygame.draw.rect(
+                    card,
+                    (bar_color.r, bar_color.g, bar_color.b, int(alpha * 0.9)),
+                    bar_rect,
+                    border_radius=self._scale_px(2),
+                )
+
+            bobbing = int(math.sin((self.animation_phase * 3.2) + (idx * 0.9)) * self._scale_px(1))
+            self.screen.blit(card, (x, y + bobbing))
             y += height + spacing
 
     def _toast_animation(self, toast: ToastNotification) -> tuple[int, int]:
@@ -864,7 +1051,8 @@ class ConsoleUI:
         if toast.age < fade_in:
             ratio = max(0.0, min(1.0, toast.age / fade_in))
             alpha = int(255 * ratio)
-            offset = int((1.0 - ratio) * self._scale_px(46))
+            eased = self._ease_out_back(ratio)
+            offset = int((1.0 - eased) * self._scale_px(46))
             return alpha, offset
 
         remaining = toast.lifetime - toast.age
@@ -929,3 +1117,25 @@ class ConsoleUI:
         ng = min(255, int(color.g * 0.7) + 45)
         nb = min(255, int(color.b * 0.7) + 25)
         return pygame.Color(nr, ng, nb)
+
+    @staticmethod
+    def _ease_out_cubic(value: float) -> float:
+        t = max(0.0, min(1.0, value))
+        if pytweening is not None:
+            try:
+                return float(pytweening.easeOutCubic(t))
+            except Exception:
+                pass
+        return 1.0 - ((1.0 - t) ** 3)
+
+    @staticmethod
+    def _ease_out_back(value: float) -> float:
+        t = max(0.0, min(1.0, value))
+        if pytweening is not None:
+            try:
+                return float(pytweening.easeOutBack(t))
+            except Exception:
+                pass
+        c1 = 1.70158
+        c3 = c1 + 1.0
+        return 1.0 + (c3 * ((t - 1.0) ** 3)) + (c1 * ((t - 1.0) ** 2))

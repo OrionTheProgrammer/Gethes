@@ -55,13 +55,34 @@ INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "opciones",
         "config",
         "graphics",
-        "sonido",
-        "sound",
         "idioma",
         "language",
         "uiscale",
     ),
+    "update": (
+        "update",
+        "actualizar",
+        "actualizo",
+        "atualizar",
+        "atualizo",
+        "version",
+        "patch",
+        "release",
+    ),
+    "audio": (
+        "sfx",
+        "sonido",
+        "som",
+        "audio",
+        "ruido",
+        "sound",
+        "freesound",
+        "musica",
+        "mute",
+    ),
+    "mods": ("mod", "mods", "modding", "tema mod", "story mod"),
     "creator": ("creator", "creador", "orion", "secreto", "secret", "gethes"),
+    "identity": ("quien eres", "quien sos", "who are you", "quem e voce", "eres syster"),
     "greet": ("hola", "hello", "hi", "oi", "buenas", "hey"),
     "thanks": ("gracias", "thanks", "obrigado", "thx", "vale"),
     "achievements": ("logros", "achievement", "achievements", "conquistas", "trofeo", "trofeos"),
@@ -75,6 +96,9 @@ INTENT_TO_COMMAND = {
     "profile": "slots",
     "games": "snake",
     "settings": "options",
+    "update": "update status",
+    "audio": "sfx doctor",
+    "mods": "theme list",
     "achievements": "logros",
 }
 
@@ -182,6 +206,18 @@ class SysterAssistant:
         if intent == "settings":
             return tr("app.syster.reply.settings")
 
+        if intent == "update":
+            return tr("app.syster.reply.update")
+
+        if intent == "audio":
+            return tr("app.syster.reply.audio")
+
+        if intent == "mods":
+            return tr("app.syster.reply.mods")
+
+        if intent == "identity":
+            return tr("app.syster.reply.identity")
+
         if intent == "achievements":
             return tr(
                 "app.syster.reply.achievement_progress",
@@ -202,7 +238,17 @@ class SysterAssistant:
         return tr("app.syster.reply.hint", cmd=hint_cmd)
 
     def _follow_up_reply(self, tr: Callable[[str], str], context: SysterContext) -> str:
-        if self.last_intent in {"story", "save", "profile", "games", "settings", "achievements"}:
+        if self.last_intent in {
+            "story",
+            "save",
+            "profile",
+            "games",
+            "settings",
+            "achievements",
+            "update",
+            "audio",
+            "mods",
+        }:
             hint_cmd = self._suggest_command(self.last_intent, context)
             return tr("app.syster.reply.followup", cmd=hint_cmd)
 

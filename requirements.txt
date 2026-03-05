@@ -1,3 +1,8 @@
 pygame-ce>=2.5.7
 pyconify>=0.2.1
 freesound-python>=1.1
+watchdog>=4.0
+pytweening>=1.2.0
+pygame-menu>=4.5.2
+pymunk>=6.8
+miniaudio>=1.61; python_version < "3.13"

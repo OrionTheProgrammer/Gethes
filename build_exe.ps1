@@ -136,6 +136,11 @@ $args = @(
     "--name", "Gethes",
     "--version-file", "packaging/version_info.txt",
     "--hidden-import", "freesound",
+    "--hidden-import", "watchdog.events",
+    "--hidden-import", "watchdog.observers",
+    "--hidden-import", "pygame_menu",
+    "--hidden-import", "pymunk",
+    "--hidden-import", "pytweening",
     "--add-data", "gethes/data;gethes/data",
     "--add-data", "gethes/assets;gethes/assets",
     "main.py"

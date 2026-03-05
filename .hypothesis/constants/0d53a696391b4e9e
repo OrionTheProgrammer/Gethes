@@ -1,0 +1,4 @@
+# file: C:\Users\orion\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\pymunk\space.py
+# hypothesis_version: 6.151.9
+
+['BB', 'Body', 'Constraint', 'Shape', 'Space', 'Windows', '_begin', '_handlers', '_post_solve', '_pre_solve', '_separate', '_static_body', 'arbiters', 'begin', 'bodies', 'collision_bias', 'collision_slop', 'constraints', 'cpPointQueryInfo *', 'cpSegmentQueryInfo *', 'currentTimeStep', 'damping', 'gravity', 'idle_speed_threshold', 'iterations', 'post_solve', 'pre_solve', 'pymunk_version', 'reStructuredText', 'separate', 'shapeIDCounter', 'shapes', 'sleep_time_threshold', 'special', 'stamp', 'threaded', 'threads', 'uintptr_t']

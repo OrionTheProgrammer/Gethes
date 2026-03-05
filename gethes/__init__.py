@@ -9,6 +9,7 @@ __all__ = [
     "freesound_sfx",
     "i18n",
     "icon_pack",
+    "mod_watcher",
     "runtime_paths",
     "save_system",
     "syster",

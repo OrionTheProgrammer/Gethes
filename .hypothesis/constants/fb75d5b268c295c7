@@ -1,0 +1,4 @@
+# file: C:\Users\orion\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\pymunk\__init__.py
+# hypothesis_version: 6.151.9
+
+['Arbiter', 'BB', 'Body', 'Circle', 'ContactPoint', 'ContactPointSet', 'PointQueryInfo', 'Poly', 'Segment', 'SegmentQueryInfo', 'Shape', 'ShapeFilter', 'ShapeQueryInfo', 'Space', 'Transform', 'Vec2d', 'area_for_circle', 'area_for_poly', 'area_for_segment', 'chipmunk_version', 'empty_callback', 'moment_for_box', 'moment_for_circle', 'moment_for_poly', 'moment_for_segment', 'reStructuredText', 'version']

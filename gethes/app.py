@@ -4,7 +4,9 @@ import json
 import os
 import queue
 import shlex
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -21,9 +23,11 @@ from gethes.config import (
 from gethes.freesound_sfx import FreesoundSFXService
 from gethes.games.codebreaker import CodeBreakerGame
 from gethes.games.hangman import HangmanGame
+from gethes.games.physics_lab import PhysicsLabGame
 from gethes.games.snake import SnakeGame
 from gethes.games.tictactoe import TicTacToeGame
 from gethes.i18n import I18n
+from gethes.mod_watcher import ModWatcher
 from gethes.runtime_paths import resource_package_dir, user_data_dir
 from gethes.save_system import SaveManager
 from gethes.story.story_mode import StoryMode
@@ -72,6 +76,8 @@ class GethesApp:
         self.sfx_service = FreesoundSFXService(api_key=self.config.freesound_api_key)
         self.input_handler: Callable[[str], None] | None = None
         self.update_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
+        self.mod_watcher: ModWatcher | None = None
+        self.mod_reload_times: dict[str, float] = {"theme": 0.0, "story": 0.0}
         self.update_check_running = False
         self.update_install_running = False
         self.update_install_after_check = False
@@ -109,6 +115,7 @@ class GethesApp:
         self.ui.set_audio(self.audio)
         self._ensure_modding_templates()
         self.theme_presets = self._load_theme_presets()
+        self._start_mod_watcher()
         self._reload_audio_assets()
 
         self.boot_active = False
@@ -129,6 +136,7 @@ class GethesApp:
         self.story = StoryMode(self, self.data_dir, mod_story_dir=self.story_mods_dir)
         self.tictactoe = TicTacToeGame(self)
         self.codebreaker = CodeBreakerGame(self)
+        self.physics_lab = PhysicsLabGame(self)
 
     def tr(self, key: str, **kwargs: object) -> str:
         return self.i18n.t(key, **kwargs)
@@ -148,6 +156,8 @@ class GethesApp:
             self._update_boot(dt)
         if self.snake.active:
             self.snake.update(dt)
+        if self.physics_lab.active:
+            self.physics_lab.update(dt)
 
     def set_input_handler(self, handler: Callable[[str], None]) -> None:
         self.input_handler = handler
@@ -251,6 +261,15 @@ class GethesApp:
                 self.set_stat("codebreaker_best_attempts", attempts_used)
         if hint_used:
             self.bump_stat("codebreaker_hints", 1)
+        self._save_current_slot(user_feedback=False)
+
+    def on_physics_finished(self, score: int, won: bool, cancelled: bool) -> None:
+        if cancelled:
+            return
+        self.bump_stat("physics_games", 1)
+        if won:
+            self.bump_stat("physics_wins", 1)
+        self.set_stat_max("physics_best_score", score)
         self._save_current_slot(user_feedback=False)
 
     def _migrate_legacy_theme(self) -> None:
@@ -416,8 +435,77 @@ class GethesApp:
         self.theme_presets = self._load_theme_presets()
         return len(self.theme_presets)
 
+    def _start_mod_watcher(self) -> None:
+        if self.mod_watcher is not None:
+            return
+        if not ModWatcher.is_available():
+            return
+
+        watcher = ModWatcher(self._on_mod_file_change)
+        watcher.add_target(self.theme_mods_dir, tag="theme")
+        watcher.add_target(self.story_mods_dir, tag="story")
+        if watcher.start():
+            self.mod_watcher = watcher
+
+    def _stop_mod_watcher(self) -> None:
+        if self.mod_watcher is None:
+            return
+        self.mod_watcher.stop()
+        self.mod_watcher = None
+
+    def _on_mod_file_change(self, tag: str, path: Path) -> None:
+        self.update_events.put(
+            (
+                "mod_change",
+                {
+                    "tag": tag,
+                    "path": str(path),
+                },
+            )
+        )
+
+    def _handle_mods(self, args: list[str]) -> None:
+        action = args[0].lower() if args else "status"
+        if action in {"status", "state"}:
+            watch_state = (
+                "ON"
+                if self.mod_watcher is not None and self.mod_watcher.is_running()
+                else "OFF"
+            )
+            self.ui.write(
+                self.tr(
+                    "app.mods.status",
+                    watch=watch_state,
+                    themes=len(self.theme_presets),
+                    story_pages=len(self.story.pages),
+                )
+            )
+            self.ui.write(
+                self.tr(
+                    "app.mods.paths",
+                    themes=str(self.theme_mods_dir),
+                    story=str(self.story_mods_dir),
+                )
+            )
+            self.ui.write(self.tr("app.mods.usage"))
+            return
+
+        if action == "reload":
+            count = self._reload_theme_presets()
+            self.story.reload_for_language()
+            self.ui.write(self.tr("app.mods.reloaded", themes=count, story_pages=len(self.story.pages)))
+            return
+
+        self.ui.write(self.tr("app.mods.usage"))
+
     def _on_idle(self) -> None:
-        if self.intro_active or self.boot_active or self.snake.active or self.input_handler is not None:
+        if (
+            self.intro_active
+            or self.boot_active
+            or self.snake.active
+            or self.physics_lab.active
+            or self.input_handler is not None
+        ):
             return
 
         if self.idle_count % 3 == 2:
@@ -459,6 +547,10 @@ class GethesApp:
             self.ui.set_screen(self._welcome_text())
             return
 
+        if cmd in {"vmenu", "menuui", "visualmenu"}:
+            self._open_visual_menu()
+            return
+
         if cmd == "snake":
             self.snake.start()
             return
@@ -483,8 +575,20 @@ class GethesApp:
             self.codebreaker.start()
             return
 
+        if cmd in {"physics", "lab", "physicslab"}:
+            self.physics_lab.start()
+            return
+
         if cmd in {"opciones", "options", "opcoes"}:
             self.ui.write(self._options_text())
+            return
+
+        if cmd == "modsreload":
+            self._handle_mods(["reload"])
+            return
+
+        if cmd == "mods":
+            self._handle_mods(args)
             return
 
         if cmd in {"logros", "achievements", "ach"}:
@@ -570,6 +674,32 @@ class GethesApp:
             return
 
         self.ui.write(self.tr("app.unknown", cmd=cmd))
+
+    def _open_visual_menu(self) -> None:
+        if self.input_handler is not None or self.boot_active or self.intro_active:
+            return
+        if not self.ui.supports_visual_menu():
+            self.ui.write(self.tr("app.vmenu.unavailable"))
+            return
+
+        selected = self.ui.open_visual_menu(
+            title=self.tr("app.vmenu.title"),
+            items=[
+                (self.tr("app.vmenu.item.snake"), "snake"),
+                (self.tr("app.vmenu.item.hangman1"), "ahorcado1"),
+                (self.tr("app.vmenu.item.hangman2"), "ahorcado2"),
+                (self.tr("app.vmenu.item.tictactoe"), "gato"),
+                (self.tr("app.vmenu.item.codebreaker"), "codigo"),
+                (self.tr("app.vmenu.item.physics"), "physics"),
+                (self.tr("app.vmenu.item.story"), "historia"),
+                (self.tr("app.vmenu.item.achievements"), "logros"),
+                (self.tr("app.vmenu.item.options"), "options"),
+                (self.tr("app.vmenu.item.help"), "help"),
+            ],
+            back_label=self.tr("app.vmenu.back"),
+        )
+        if selected:
+            self._on_command(selected)
 
     def _handle_syster(self, args: list[str]) -> None:
         if not args:
@@ -709,6 +839,9 @@ class GethesApp:
         if action == "test":
             self._handle_sfx_test(payload)
             return
+        if action in {"doctor", "diag", "debug"}:
+            self._handle_sfx_doctor()
+            return
 
         self.ui.write(self.tr("app.sfx.usage"))
 
@@ -719,6 +852,7 @@ class GethesApp:
         overrides_count = len(self.config.sfx_overrides)
 
         self.ui.write(self.tr("app.sfx.status", status=self.audio.describe_status()))
+        self.ui.write(self.tr("app.sfx.backend", value=self.audio.backend()))
         self.ui.write(self.tr("app.sfx.assets", path=str(self.assets_dir)))
         self.ui.write(self.tr("app.sfx.custom_dir", path=str(self.user_sfx_dir)))
         self.ui.write(self.tr("app.sfx.provider", value=provider))
@@ -737,6 +871,19 @@ class GethesApp:
         if loaded_files:
             items = ", ".join(f"{event}:{name}" for event, name in sorted(loaded_files.items()))
             self.ui.write(self.tr("app.sfx.loaded_files", items=items))
+
+    def _handle_sfx_doctor(self) -> None:
+        self._show_sfx_status()
+        self.ui.write(self.tr("app.sfx.doctor_title"))
+        loaded = set(self.audio.loaded_events())
+        for event in self.audio.available_events():
+            state = "OK" if event in loaded else "--"
+            source = self.audio.source_path_for_event(event)
+            self.ui.write(self.tr("app.sfx.doctor_item", state=state, event=event, source=source))
+        if not self.audio.mixer_ready:
+            self.ui.write(self.tr("app.sfx.doctor_mixer_off"))
+        elif not loaded:
+            self.ui.write(self.tr("app.sfx.doctor_no_events"))
 
     def _handle_sfx_key(self, args: list[str]) -> None:
         if len(args) != 1:
@@ -833,24 +980,54 @@ class GethesApp:
             self.ui.write(self.tr("app.sfx.key_required"))
             return
 
-        self.ui.write(self.tr("app.sfx.bind_downloading", event=event, id=sound_id))
-        target_name = f"{event}_{sound_id}.ogg"
-        downloaded, error_msg = self.sfx_service.download_preview(
-            sound_id=sound_id,
-            output_dir=self.user_sfx_dir,
-            target_name=target_name,
-            quality="lq",
-            file_format="ogg",
-        )
-        if downloaded is None or error_msg:
-            self.ui.write(self.tr("app.sfx.bind_failed", error=(error_msg or "unknown")))
+        previous_override = self.config.sfx_overrides.get(event)
+        last_error = "unknown"
+        for file_format in ("ogg", "mp3"):
+            self.ui.write(
+                self.tr(
+                    "app.sfx.bind_downloading_fmt",
+                    event=event,
+                    id=sound_id,
+                    fmt=file_format,
+                )
+            )
+            target_name = f"{event}_{sound_id}.{file_format}"
+            downloaded, error_msg = self.sfx_service.download_preview(
+                sound_id=sound_id,
+                output_dir=self.user_sfx_dir,
+                target_name=target_name,
+                quality="lq",
+                file_format=file_format,
+            )
+            if downloaded is None or error_msg:
+                last_error = error_msg or "download_failed"
+                continue
+
+            self.config.sfx_overrides[event] = downloaded.name
+            self._reload_audio_assets()
+            if not self.audio.mixer_ready:
+                if previous_override is None:
+                    self.config.sfx_overrides.pop(event, None)
+                else:
+                    self.config.sfx_overrides[event] = previous_override
+                self._reload_audio_assets()
+                self.ui.write(self.tr("app.sfx.doctor_mixer_off"))
+                return
+            if event not in self.audio.loaded_events():
+                last_error = f"unsupported_{file_format}"
+                continue
+
+            self._save_config()
+            self.ui.write(self.tr("app.sfx.bind_done", event=event, file=downloaded.name))
+            self.audio.play(event)
             return
 
-        self.config.sfx_overrides[event] = downloaded.name
+        if previous_override is None:
+            self.config.sfx_overrides.pop(event, None)
+        else:
+            self.config.sfx_overrides[event] = previous_override
         self._reload_audio_assets()
-        self._save_config()
-        self.ui.write(self.tr("app.sfx.bind_done", event=event, file=downloaded.name))
-        self.audio.play(event)
+        self.ui.write(self.tr("app.sfx.bind_failed", error=last_error))
 
     def _handle_sfx_reset(self, args: list[str]) -> None:
         if len(args) != 1:
@@ -1375,11 +1552,42 @@ class GethesApp:
             self._start_update_check(user_feedback=True)
             return
 
-        self._start_update_download(self.pending_update)
+        self._start_update_download(self.pending_update, preferred_method="auto")
 
-    def _start_update_download(self, update: UpdateInfo) -> None:
+    def _runtime_update_target(self) -> tuple[Path, Path] | None:
+        if not getattr(sys, "frozen", False):
+            return None
+        exe_path = Path(sys.executable).resolve()
+        app_dir = exe_path.parent
+        if not exe_path.exists() or not app_dir.exists():
+            return None
+        return app_dir, exe_path
+
+    def _choose_update_method(self, update: UpdateInfo, preferred_method: str = "auto") -> str:
+        if preferred_method == "portable":
+            return "portable" if update.portable_url else "none"
+        if preferred_method == "installer":
+            return "installer" if update.installer_url else "none"
+
+        target = self._runtime_update_target()
+        if target is not None and update.portable_url:
+            app_dir, _ = target
+            if self.update_manager.can_self_update_portable(app_dir):
+                return "portable"
+        if update.installer_url:
+            return "installer"
+        if update.portable_url:
+            return "portable"
+        return "none"
+
+    def _start_update_download(self, update: UpdateInfo, preferred_method: str = "auto") -> None:
         if self.update_install_running:
             self.ui.write(self.tr("app.update.busy"))
+            return
+
+        method = self._choose_update_method(update, preferred_method=preferred_method)
+        if method == "none":
+            self.ui.write(self.tr("app.update.asset_missing"))
             return
 
         self.update_install_running = True
@@ -1388,13 +1596,23 @@ class GethesApp:
 
         def worker() -> None:
             try:
-                installer = self.update_manager.download_installer(update, self.update_download_dir)
+                if method == "portable":
+                    downloaded = self.update_manager.download_portable_zip(
+                        update,
+                        self.update_download_dir,
+                    )
+                else:
+                    downloaded = self.update_manager.download_installer(
+                        update,
+                        self.update_download_dir,
+                    )
                 self.update_events.put(
                     (
                         "install_downloaded",
                         {
-                            "path": str(installer),
+                            "path": str(downloaded),
                             "version": update.latest_version,
+                            "method": method,
                         },
                     )
                 )
@@ -1428,6 +1646,37 @@ class GethesApp:
             if event == "install_failed":
                 self._consume_update_install_failed(payload)
                 continue
+
+            if event == "mod_change":
+                self._consume_mod_change(payload)
+                continue
+
+    def _consume_mod_change(self, payload: dict[str, object]) -> None:
+        tag = str(payload.get("tag", "")).strip().lower()
+        if tag not in {"theme", "story"}:
+            return
+
+        now = time.monotonic()
+        last = self.mod_reload_times.get(tag, 0.0)
+        if (now - last) < 0.35:
+            return
+        self.mod_reload_times[tag] = now
+
+        if tag == "theme":
+            count = self._reload_theme_presets()
+            self.ui.push_notification(
+                self.tr("app.mods.toast.theme_title"),
+                self.tr("app.mods.toast.theme_body", count=count),
+                icon_key="mdi:information-outline",
+            )
+            return
+
+        self.story.reload_for_language()
+        self.ui.push_notification(
+            self.tr("app.mods.toast.story_title"),
+            self.tr("app.mods.toast.story_body"),
+            icon_key="mdi:information-outline",
+        )
 
     def _consume_update_check_result(self, payload: dict[str, object]) -> None:
         self.update_check_running = False
@@ -1479,8 +1728,8 @@ class GethesApp:
             self.ui.write(self.tr("app.update.repo_missing"))
             self.ui.write(self.tr("app.update.repo_hint"))
             return
-        if status == "installer_missing":
-            self.ui.write(self.tr("app.update.installer_missing"))
+        if status in {"installer_missing", "asset_missing"}:
+            self.ui.write(self.tr("app.update.asset_missing"))
             return
         if status == "network_error":
             self.ui.write(self.tr("app.update.network_error"))
@@ -1496,13 +1745,48 @@ class GethesApp:
             self.ui.set_status(self.tr("ui.ready"))
             return
 
-        installer_path = Path(raw_path)
-        if not self.update_manager.launch_installer(installer_path):
+        method = str(payload.get("method", "installer")).strip().lower()
+        downloaded_path = Path(raw_path)
+
+        if method == "portable":
+            target = self._runtime_update_target()
+            if target is None:
+                self.ui.write(self.tr("app.update.portable_unavailable"))
+                if self.pending_update is not None and self.pending_update.installer_url:
+                    self.ui.write(self.tr("app.update.fallback_installer"))
+                    self._start_update_download(self.pending_update, preferred_method="installer")
+                else:
+                    self.ui.set_status(self.tr("ui.ready"))
+                return
+
+            app_dir, exe_path = target
+            launched = self.update_manager.launch_portable_self_update(
+                zip_path=downloaded_path,
+                app_dir=app_dir,
+                exe_path=exe_path,
+                working_dir=self.update_download_dir,
+            )
+            if not launched:
+                self.ui.write(self.tr("app.update.portable_unavailable"))
+                if self.pending_update is not None and self.pending_update.installer_url:
+                    self.ui.write(self.tr("app.update.fallback_installer"))
+                    self._start_update_download(self.pending_update, preferred_method="installer")
+                else:
+                    self.ui.set_status(self.tr("ui.ready"))
+                return
+
+            self.ui.write(self.tr("app.update.applying_portable"))
+            self.ui.write(self.tr("app.update.installing_exit"))
+            self._shutdown()
+            self.ui.request_quit()
+            return
+
+        if not self.update_manager.launch_installer(downloaded_path, silent=True):
             self.ui.write(self.tr("app.update.launch_failed"))
             self.ui.set_status(self.tr("ui.ready"))
             return
 
-        self.ui.write(self.tr("app.update.launching"))
+        self.ui.write(self.tr("app.update.launching_silent"))
         self.ui.write(self.tr("app.update.installing_exit"))
         self._shutdown()
         self.ui.request_quit()
@@ -1588,6 +1872,7 @@ class GethesApp:
         self.config_store.save(self.config)
 
     def _shutdown(self) -> None:
+        self._stop_mod_watcher()
         self._save_current_slot(user_feedback=False)
         self._save_config()
 
@@ -1711,7 +1996,9 @@ class GethesApp:
                 "- `ahorcado1` / `ahorcado2`",
                 "- `gato` / `tictactoe`",
                 "- `codigo` / `codebreaker`",
+                "- `physics`",
                 "- `historia`",
+                "- `vmenu`",
                 "",
                 self.tr("app.welcome.saves"),
                 "- `slots`",
@@ -1730,11 +2017,13 @@ class GethesApp:
                 f"- help                     : {self.tr('app.help.help')}",
                 f"- clear                    : {self.tr('app.help.clear')}",
                 f"- menu                     : {self.tr('app.help.menu')}",
+                f"- vmenu                    : {self.tr('app.help.vmenu')}",
                 f"- snake                    : {self.tr('app.help.snake')}",
                 f"- ahorcado1 / hangman1     : {self.tr('app.help.hangman1')}",
                 f"- ahorcado2 / hangman2     : {self.tr('app.help.hangman2')}",
                 f"- gato / tictactoe         : {self.tr('app.help.tictactoe')}",
                 f"- codigo / codebreaker     : {self.tr('app.help.codebreaker')}",
+                f"- physics                  : {self.tr('app.help.physics')}",
                 f"- historia / story         : {self.tr('app.help.story')}",
                 f"- logros / achievements    : {self.tr('app.help.achievements')}",
                 f"- slots                    : {self.tr('app.help.slots')}",
@@ -1754,6 +2043,7 @@ class GethesApp:
                 f"- update ...               : {self.tr('app.help.update')}",
                 f"- syster ...               : {self.tr('app.help.syster')}",
                 f"- syster endpoint <url|off>: {self.tr('app.help.syster_endpoint')}",
+                f"- mods <status|reload>     : {self.tr('app.help.mods')}",
                 f"- sfx                      : {self.tr('app.help.sfx')}",
                 f"- save                     : {self.tr('app.help.save')}",
                 f"- exit                     : {self.tr('app.help.exit')}",
@@ -1773,6 +2063,7 @@ class GethesApp:
                 f"- {self.tr('app.options.font'):13}: {self.config.font_family}",
                 f"- {self.tr('app.options.font_size'):13}: {self.config.font_size}",
                 f"- {self.tr('app.options.sound'):13}: {'ON' if self.config.sound else 'OFF'}",
+                f"- {self.tr('app.options.audio_backend'):13}: {self.audio.backend()}",
                 f"- {self.tr('app.options.graphics'):13}: {self.config.graphics}",
                 f"- {self.tr('app.options.fps'):13}: {self.ui.get_target_fps()}",
                 f"- {self.tr('app.options.theme'):13}: {theme_value}",
@@ -1786,6 +2077,7 @@ class GethesApp:
                 f"- {self.tr('app.options.update_repo'):13}: {self.update_manager.repo or '-'}",
                 f"- {self.tr('app.options.achievements'):13}: {unlocked_count(self.current_slot.flags)}/{len(ACHIEVEMENTS)}",
                 f"- {self.tr('app.options.mods_path'):13}: {self.mods_dir}",
+                f"- {self.tr('app.options.mods_watch'):13}: {'ON' if self.mod_watcher is not None and self.mod_watcher.is_running() else 'OFF'}",
                 f"- {self.tr('app.options.storage'):13}: {self.storage_dir}",
             ]
         )

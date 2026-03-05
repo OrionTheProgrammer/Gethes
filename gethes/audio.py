@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import time
 
 import pygame
+
+try:
+    import miniaudio
+except Exception:  # pragma: no cover - optional dependency.
+    miniaudio = None
 
 
 EVENT_FILES: dict[str, str] = {
@@ -24,11 +31,15 @@ class AudioManager:
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
         self.mixer_ready = False
+        self.mixer_error = ""
+        self.backend_name = "mute"
         self.assets_dir: Path | None = None
         self.user_assets_dir: Path | None = None
         self.sounds: dict[str, pygame.mixer.Sound] = {}
         self.loaded_paths: dict[str, Path] = {}
         self.event_overrides: dict[str, str] = {}
+        self._mini_lock = threading.Lock()
+        self._mini_playbacks: list[tuple[object, object, float]] = []
 
     def initialize(
         self,
@@ -40,7 +51,10 @@ class AudioManager:
         self.user_assets_dir = user_assets_dir
         self.sounds = {}
         self.loaded_paths = {}
+        self.mixer_error = ""
+        self.backend_name = "mute"
         self.set_event_overrides(overrides or {})
+        self._stop_all_miniaudio_playbacks()
 
         if self.user_assets_dir is not None:
             try:
@@ -48,24 +62,29 @@ class AudioManager:
             except OSError:
                 self.user_assets_dir = None
 
-        try:
-            if pygame.mixer.get_init() is None:
-                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+        init_ok = self._ensure_mixer()
+        if init_ok:
             self.mixer_ready = True
-        except pygame.error:
-            self.mixer_ready = False
+            self.backend_name = "pygame"
+            for event_name in EVENT_FILES:
+                for path in self._candidate_paths_for_event(event_name):
+                    if not path.exists():
+                        continue
+                    try:
+                        self.sounds[event_name] = pygame.mixer.Sound(str(path))
+                        self.loaded_paths[event_name] = path
+                        break
+                    except pygame.error:
+                        continue
             return
 
-        for event_name in EVENT_FILES:
-            for path in self._candidate_paths_for_event(event_name):
-                if not path.exists():
-                    continue
-                try:
-                    self.sounds[event_name] = pygame.mixer.Sound(str(path))
-                    self.loaded_paths[event_name] = path
-                    break
-                except pygame.error:
-                    continue
+        self.mixer_ready = False
+        if miniaudio is None:
+            self.backend_name = "mute"
+            return
+
+        self._load_paths_for_miniaudio()
+        self.backend_name = "miniaudio" if self.loaded_paths else "mute"
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -91,17 +110,21 @@ class AudioManager:
         )
 
     def play(self, event: str) -> None:
-        if not self.enabled or not self.mixer_ready:
+        if not self.enabled:
             return
 
-        sound = self.sounds.get(event)
-        if sound is None:
+        if self.backend_name == "pygame" and self.mixer_ready:
+            sound = self.sounds.get(event)
+            if sound is None:
+                return
+            try:
+                sound.play()
+            except pygame.error:
+                return
             return
 
-        try:
-            sound.play()
-        except pygame.error:
-            return
+        if self.backend_name == "miniaudio":
+            self._play_with_miniaudio(event)
 
     def available_events(self) -> list[str]:
         return sorted(EVENT_FILES)
@@ -112,9 +135,19 @@ class AudioManager:
     def loaded_files(self) -> dict[str, str]:
         return {event: path.name for event, path in self.loaded_paths.items()}
 
+    def source_path_for_event(self, event: str) -> str:
+        path = self.loaded_paths.get(event)
+        if path is None:
+            return "-"
+        return str(path)
+
+    def backend(self) -> str:
+        return self.backend_name
+
     def describe_status(self) -> str:
-        if not self.mixer_ready:
-            return "mixer=off"
+        mixer_state = "on" if self.mixer_ready else "off"
+        if not self.mixer_ready and self.mixer_error:
+            mixer_state = f"off ({self.mixer_error})"
         custom_count = 0
         if self.user_assets_dir is not None:
             for path in self.loaded_paths.values():
@@ -123,7 +156,95 @@ class AudioManager:
                     custom_count += 1
                 except ValueError:
                     continue
-        return f"mixer=on, loaded={len(self.sounds)}/{len(EVENT_FILES)}, custom={custom_count}"
+        loaded_count = len(self.loaded_paths)
+        return (
+            f"backend={self.backend_name}, mixer={mixer_state}, "
+            f"loaded={loaded_count}/{len(EVENT_FILES)}, custom={custom_count}"
+        )
+
+    def _ensure_mixer(self) -> bool:
+        if pygame.mixer.get_init() is not None:
+            return True
+
+        attempts = (
+            (44100, -16, 2, 512),
+            (48000, -16, 2, 1024),
+            (22050, -16, 2, 1024),
+        )
+        for frequency, size, channels, buffer in attempts:
+            try:
+                pygame.mixer.init(
+                    frequency=frequency,
+                    size=size,
+                    channels=channels,
+                    buffer=buffer,
+                )
+                self.mixer_error = ""
+                return True
+            except pygame.error as exc:
+                self.mixer_error = str(exc)
+                continue
+        return False
+
+    def _load_paths_for_miniaudio(self) -> None:
+        self.loaded_paths = {}
+        for event_name in EVENT_FILES:
+            for path in self._candidate_paths_for_event(event_name):
+                if path.exists():
+                    self.loaded_paths[event_name] = path
+                    break
+
+    def _play_with_miniaudio(self, event: str) -> None:
+        if miniaudio is None:
+            return
+        source = self.loaded_paths.get(event)
+        if source is None:
+            return
+
+        try:
+            if hasattr(miniaudio, "PlaybackDevice") and hasattr(miniaudio, "stream_file"):
+                stream = miniaudio.stream_file(str(source))
+                device = miniaudio.PlaybackDevice()
+                device.start(stream)
+                with self._mini_lock:
+                    self._mini_playbacks.append((device, stream, time.monotonic()))
+                    self._cleanup_miniaudio_playbacks_locked()
+                return
+
+            if hasattr(miniaudio, "play_file"):
+                miniaudio.play_file(str(source))
+                return
+        except Exception as exc:
+            self.mixer_error = str(exc)
+            return
+
+    def _stop_all_miniaudio_playbacks(self) -> None:
+        if not self._mini_playbacks:
+            return
+        with self._mini_lock:
+            for device, _, _ in self._mini_playbacks:
+                self._close_miniaudio_device(device)
+            self._mini_playbacks = []
+
+    def _cleanup_miniaudio_playbacks_locked(self) -> None:
+        now = time.monotonic()
+        keep: list[tuple[object, object, float]] = []
+        for device, stream, started in self._mini_playbacks:
+            if (now - started) < 8.0 and len(keep) < 16:
+                keep.append((device, stream, started))
+                continue
+            self._close_miniaudio_device(device)
+        self._mini_playbacks = keep
+
+    @staticmethod
+    def _close_miniaudio_device(device: object) -> None:
+        for method_name in ("stop", "close"):
+            method = getattr(device, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
 
     def _candidate_paths_for_event(self, event: str) -> list[Path]:
         candidates: list[Path] = []

@@ -1,0 +1,4 @@
+# file: C:\Users\orion\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\pymunk\shapes.py
+# hypothesis_version: 6.151.9
+
+['Body', 'Poly', 'Shape', 'Space', '_hashid', 'a', 'b', 'body', 'collision_type', 'cpPointQueryInfo *', 'cpSegmentQueryInfo *', 'density', 'elasticity', 'filter', 'friction', 'general', 'init', 'mass', 'offset', 'radius', 'reStructuredText', 'sensor', 'surface_velocity', 'transform', 'vertices']

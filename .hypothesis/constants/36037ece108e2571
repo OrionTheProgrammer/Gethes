@@ -1,0 +1,4 @@
+# file: C:\Users\orion\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\pymunk\body.py
+# hypothesis_version: 6.151.9
+
+['Body', 'Body(Body.KINEMATIC)', 'Body(Body.STATIC)', 'Constraint', 'Shape', 'Space', '_position_func', '_space', '_velocity_func', 'angle', 'angular_velocity', 'body_type', 'center_of_gravity', 'cpBodyUpdatePosition', 'cpBodyUpdateVelocity', 'force', 'is_sleeping', 'mass', 'moment', 'position', 'reStructuredText', 'special', 'torque', 'uintptr_t', 'velocity']

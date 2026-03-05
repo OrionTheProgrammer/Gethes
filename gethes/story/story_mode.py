@@ -163,6 +163,7 @@ class StoryMode:
             title,
             "==========================================",
             self.app.tr("game.story.chapter_page", chapter=chapter, page=chapter_page),
+            self.app.tr("game.story.mood_line"),
             "",
             text,
             "",
@@ -171,6 +172,7 @@ class StoryMode:
         if message:
             lines.extend(["", message])
         self.app.ui.set_screen("\n".join(lines))
+        self.app.audio.play("message")
         self.app.on_story_progress(
             page=self.page_index + 1,
             total=len(self.pages),

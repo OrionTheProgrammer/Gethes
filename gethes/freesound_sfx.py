@@ -129,6 +129,8 @@ class FreesoundSFXService:
         safe_name = Path(target_name).name.strip()
         if not safe_name:
             safe_name = f"sound_{sid}.{file_format}"
+        if Path(safe_name).suffix.lower() != f".{file_format.lower()}":
+            safe_name = f"{Path(safe_name).stem}.{file_format.lower()}"
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
