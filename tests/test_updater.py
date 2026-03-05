@@ -81,6 +81,60 @@ def test_parse_checksum_from_text_supports_common_formats() -> None:
     assert zip_sum == "c3b1966de224f03914f6c3e20de62b0dd9f8946724ec22abc158756eba8402dc"
 
 
+def test_extract_tag_from_release_url() -> None:
+    url = "https://github.com/OrionTheProgrammer/Gethes/releases/tag/v0.04"
+    assert UpdateManager._extract_tag_from_release_url(url) == "v0.04"
+
+
+def test_extract_assets_from_release_html_filters_by_tag() -> None:
+    html = "\n".join(
+        [
+            '<a href="/OrionTheProgrammer/Gethes/releases/download/v0.04/Gethes-Setup-v0.04.exe">setup</a>',
+            '<a href="/OrionTheProgrammer/Gethes/releases/download/v0.04/Gethes-v0.04-win64-portable.zip">portable</a>',
+            '<a href="/OrionTheProgrammer/Gethes/releases/download/v0.03/Gethes-Setup-v0.03.exe">old</a>',
+        ]
+    )
+    assets = UpdateManager._extract_assets_from_release_html(
+        html,
+        repo="OrionTheProgrammer/Gethes",
+        tag_name="v0.04",
+    )
+    names = {item["name"] for item in assets}
+    assert "Gethes-Setup-v0.04.exe" in names
+    assert "Gethes-v0.04-win64-portable.zip" in names
+    assert "Gethes-Setup-v0.03.exe" not in names
+
+
+def test_check_latest_falls_back_to_web_when_api_unavailable(monkeypatch) -> None:
+    manager = UpdateManager(current_version="0.3.0", repo="OrionTheProgrammer/Gethes")
+
+    monkeypatch.setattr(
+        UpdateManager,
+        "_fetch_release_payload",
+        lambda self, url: None,
+    )
+    monkeypatch.setattr(
+        UpdateManager,
+        "_fetch_release_payload_web",
+        lambda self: {
+            "tag_name": "v0.4.0",
+            "name": "v0.4.0",
+            "html_url": "https://github.com/OrionTheProgrammer/Gethes/releases/tag/v0.4.0",
+            "assets": [
+                {
+                    "name": "Gethes-v0.4.0-win64-portable.zip",
+                    "url": "https://github.com/OrionTheProgrammer/Gethes/releases/latest/download/Gethes-v0.4.0-win64-portable.zip",
+                }
+            ],
+        },
+    )
+
+    status, info = manager.check_latest()
+    assert status == "available"
+    assert info is not None
+    assert info.latest_version == "0.4.0"
+
+
 def test_can_portable_update_uses_elevation_when_direct_write_is_unavailable(
     monkeypatch,
     tmp_path: Path,

@@ -11,12 +11,13 @@ import subprocess
 import threading
 import time
 from typing import Callable
-from urllib import error, request
+from urllib import error, parse, request
 
 from . import __version__
 
 
 GITHUB_API = "https://api.github.com"
+GITHUB_WEB = "https://github.com"
 DEFAULT_TIMEOUT = 8.0
 
 
@@ -67,6 +68,8 @@ class UpdateManager:
 
         url = f"{GITHUB_API}/repos/{self.repo}/releases/latest"
         payload = self._fetch_release_payload(url)
+        if payload is None:
+            payload = self._fetch_release_payload_web()
         if payload is None:
             return "network_error", None
 
@@ -626,6 +629,117 @@ class UpdateManager:
             return cached_payload
         return None
 
+    def _fetch_release_payload_web(self) -> dict[str, object] | None:
+        if not self.repo:
+            return None
+
+        latest_url = f"{GITHUB_WEB}/{self.repo}/releases/latest"
+        final_url, html = self._fetch_release_latest_html(latest_url)
+        if not final_url:
+            return None
+
+        tag_name = self._extract_tag_from_release_url(final_url)
+        if not tag_name and html:
+            match = re.search(r"/releases/tag/([^\"'<>\\s]+)", html)
+            if match:
+                tag_name = parse.unquote(match.group(1)).strip()
+        if not tag_name:
+            return None
+
+        assets = self._extract_assets_from_release_html(html, self.repo, tag_name)
+        if not assets:
+            assets = self._build_conventional_assets(self.repo, tag_name)
+
+        return {
+            "tag_name": tag_name,
+            "name": tag_name,
+            "html_url": final_url,
+            "body": "",
+            "assets": assets,
+        }
+
+    @staticmethod
+    def _fetch_release_latest_html(url: str) -> tuple[str, str]:
+        req = request.Request(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": f"Gethes-Updater/{__version__}",
+            },
+            method="GET",
+        )
+
+        try:
+            with request.urlopen(req, timeout=DEFAULT_TIMEOUT) as resp:
+                raw = resp.read()
+                final_url = str(resp.geturl()).strip()
+        except (error.URLError, error.HTTPError, TimeoutError, ValueError):
+            return "", ""
+
+        if not raw:
+            return final_url, ""
+        return final_url, raw.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _extract_tag_from_release_url(url: str) -> str:
+        path = parse.urlparse(url).path
+        match = re.search(r"/releases/tag/([^/]+)", path)
+        if not match:
+            return ""
+        return parse.unquote(match.group(1)).strip()
+
+    @staticmethod
+    def _extract_assets_from_release_html(
+        html: str,
+        repo: str,
+        tag_name: str,
+    ) -> list[dict[str, str]]:
+        if not html.strip():
+            return []
+
+        repo_path = f"/{repo}/releases/download/"
+        tag_path = f"/{repo}/releases/download/{tag_name}/"
+        links = re.findall(r'href="([^"]+)"', html)
+        assets: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw_href in links:
+            href = raw_href.strip().replace("&amp;", "&")
+            if not href.startswith("/"):
+                continue
+            if repo_path not in href:
+                continue
+            if tag_path not in href:
+                continue
+            full_url = parse.urljoin(GITHUB_WEB, href.split("#", 1)[0])
+            name = parse.unquote(Path(parse.urlparse(full_url).path).name).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            assets.append({"name": name, "url": full_url})
+        return assets
+
+    @staticmethod
+    def _build_conventional_assets(repo: str, tag_name: str) -> list[dict[str, str]]:
+        normalized = UpdateManager._clean_version(tag_name)
+        if not normalized:
+            return []
+
+        names = [
+            f"Gethes-Setup-v{normalized}.exe",
+            f"Gethes-v{normalized}-win64-portable.zip",
+            f"SHA256SUMS-v{normalized}.txt",
+        ]
+        assets: list[dict[str, str]] = []
+        for name in names:
+            quoted = parse.quote(name, safe=".-_")
+            assets.append(
+                {
+                    "name": name,
+                    "url": f"{GITHUB_WEB}/{repo}/releases/latest/download/{quoted}",
+                }
+            )
+        return assets
+
     def _read_cached_payload(self, url: str) -> tuple[str, dict[str, object] | list[object] | None]:
         if self.cache_dir is None:
             return "", None
@@ -695,6 +809,15 @@ class UpdateManager:
             "Accept": "application/vnd.github+json",
             "User-Agent": f"Gethes-Updater/{__version__}",
         }
+        token = (
+            os.getenv("GETHES_GITHUB_TOKEN", "").strip()
+            or os.getenv("GITHUB_TOKEN", "").strip()
+        )
+        if token:
+            if token.lower().startswith("bearer ") or token.lower().startswith("token "):
+                headers["Authorization"] = token
+            else:
+                headers["Authorization"] = f"Bearer {token}"
         if etag:
             headers["If-None-Match"] = etag
 
