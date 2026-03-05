@@ -115,6 +115,10 @@ class ConsoleUI:
         self.panel_intro_duration = 1.15
         self.command_flash = 0.0
         self.typing_glow = 0.0
+        self.feedback_flash = 0.0
+        self.status_flash = 0.0
+        self.screen_shake = 0.0
+        self.screen_shake_phase = 0.0
         self.intro_active = False
         self.intro_elapsed = 0.0
         self.intro_duration = 2.6
@@ -184,6 +188,13 @@ class ConsoleUI:
                 self.command_flash = max(0.0, self.command_flash - (dt * 1.8))
             if self.typing_glow > 0.0:
                 self.typing_glow = max(0.0, self.typing_glow - (dt * 2.1))
+            if self.feedback_flash > 0.0:
+                self.feedback_flash = max(0.0, self.feedback_flash - (dt * 1.7))
+            if self.status_flash > 0.0:
+                self.status_flash = max(0.0, self.status_flash - (dt * 1.9))
+            if self.screen_shake > 0.0:
+                self.screen_shake = max(0.0, self.screen_shake - (dt * 2.8))
+            self.screen_shake_phase += dt
 
             self._update_notifications(dt)
 
@@ -311,6 +322,7 @@ class ConsoleUI:
         raw = self.input_buffer
         self.input_buffer = ""
         self.command_flash = 1.0
+        self.feedback_flash = min(1.0, self.feedback_flash + 0.22)
 
         if raw.strip():
             self.history.append(raw)
@@ -420,6 +432,9 @@ class ConsoleUI:
         self.mode_chip_text = value
 
     def set_status(self, value: str) -> None:
+        if value != self.status_text:
+            self.status_flash = min(1.0, self.status_flash + 0.85)
+            self.feedback_flash = min(1.0, self.feedback_flash + 0.18)
         self.status_text = value
 
     def supports_visual_menu(self) -> bool:
@@ -524,6 +539,30 @@ class ConsoleUI:
         self._trim_output_lines()
         self._output_revision += 1
         self.output_scroll = 0
+
+        joined = " ".join(lines).casefold()
+        is_error_like = any(
+            token in joined
+            for token in (
+                "error",
+                "failed",
+                "inval",
+                "unknown",
+                "missing",
+                "denied",
+                "fallo",
+                "falha",
+                "no se pudo",
+                "no disponible",
+            )
+        )
+        if is_error_like:
+            self.feedback_flash = min(1.0, self.feedback_flash + 0.5)
+            self.status_flash = min(1.0, self.status_flash + 0.4)
+            self.screen_shake = max(self.screen_shake, 0.55)
+        else:
+            self.feedback_flash = min(1.0, self.feedback_flash + 0.24)
+
         if play_sound:
             self._play_sound("message")
 
@@ -543,6 +582,8 @@ class ConsoleUI:
         self.notifications.append(toast)
         if len(self.notifications) > self.max_notifications:
             self.notifications = self.notifications[-self.max_notifications :]
+        self.feedback_flash = min(1.0, self.feedback_flash + 0.35)
+        self.status_flash = min(1.0, self.status_flash + 0.45)
 
     def _trim_output_lines(self) -> None:
         extra = len(self.output_lines) - self.max_output_lines
@@ -647,6 +688,15 @@ class ConsoleUI:
             return
 
         self._draw_background()
+        self._draw_feedback_overlay()
+
+        shake_x = 0
+        shake_y = 0
+        if self.screen_shake > 0.0 and self.graphics_level != "low":
+            amp = max(1, self._scale_px(2))
+            wave = 0.35 + (0.65 * self.screen_shake)
+            shake_x = int(math.sin(self.screen_shake_phase * 37.0) * amp * wave)
+            shake_y = int(math.cos(self.screen_shake_phase * 31.0) * amp * wave)
 
         margin = self._scale_px(14)
         header_h = self._scale_px(52)
@@ -654,22 +704,22 @@ class ConsoleUI:
         input_h = self._scale_px(46)
         gap = self._scale_px(10)
 
-        header_rect = pygame.Rect(margin, margin, self.width - (margin * 2), header_h)
+        header_rect = pygame.Rect(margin + shake_x, margin + shake_y, self.width - (margin * 2), header_h)
         status_rect = pygame.Rect(
-            margin,
-            self.height - margin - status_h,
+            margin + shake_x,
+            self.height - margin - status_h + shake_y,
             self.width - (margin * 2),
             status_h,
         )
         input_rect = pygame.Rect(
-            margin,
-            status_rect.top - gap - input_h,
+            margin + shake_x,
+            status_rect.top - gap - input_h + shake_y,
             self.width - (margin * 2),
             input_h,
         )
         output_rect = pygame.Rect(
-            margin,
-            header_rect.bottom + gap,
+            margin + shake_x,
+            header_rect.bottom + gap + shake_y,
             self.width - (margin * 2),
             input_rect.top - header_rect.bottom - (gap * 2),
         )
@@ -702,24 +752,74 @@ class ConsoleUI:
             pygame.draw.line(self.screen, self._mix(glow, self.bg_color, 0.58), (0, y3), (self.width, y3), 1)
 
         if self.graphics_level in {"medium", "high"}:
-            particle_count = 10 if self.graphics_level == "medium" else 18
-            particle_color = self._mix(self.accent_color, self.fg_color, 0.25)
-            for idx in range(particle_count):
-                travel_x = (idx * 131.0) + (self.animation_phase * (22.0 + (idx % 4) * 6.0))
-                travel_y = (idx * 79.0) + (self.animation_phase * (17.0 + (idx % 3) * 5.0))
-                wobble = math.sin((self.animation_phase * 0.9) + (idx * 0.67)) * 22.0
-                px = int(travel_x % max(1, self.width))
-                py = int((travel_y + wobble) % max(1, self.height))
-                radius = 1 if (idx % 5) else 2
-                alpha = 35 if radius == 1 else 52
-                layer = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
-                pygame.draw.circle(
-                    layer,
-                    (particle_color.r, particle_color.g, particle_color.b, alpha),
-                    (radius * 2, radius * 2),
-                    radius,
-                )
-                self.screen.blit(layer, (px - (radius * 2), py - (radius * 2)))
+            layers = 2 if self.graphics_level == "high" else 1
+            for layer_idx in range(layers):
+                parallax = 0.62 + (layer_idx * 0.48)
+                particle_count = (11 if self.graphics_level == "medium" else 15) + (layer_idx * 6)
+                particle_color = self._mix(self.accent_color, self.fg_color, 0.22 + (0.08 * layer_idx))
+
+                for idx in range(particle_count):
+                    seed = idx + (layer_idx * 53)
+                    speed_x = (18.0 + ((seed % 5) * 5.0)) * parallax
+                    speed_y = (11.0 + ((seed % 7) * 2.5)) * parallax
+                    wobble = math.sin((self.animation_phase * (0.8 + (layer_idx * 0.16))) + (seed * 0.57)) * (16.0 + (layer_idx * 11.0))
+
+                    px = int(((seed * 139.0) + (self.animation_phase * speed_x)) % max(1, self.width))
+                    py = int((((seed * 83.0) + (self.animation_phase * speed_y)) + wobble) % max(1, self.height))
+
+                    twinkle = 0.35 + (0.65 * (0.5 + 0.5 * math.sin((self.animation_phase * 1.7) + (seed * 0.81))))
+                    radius = 1 + (1 if (self.graphics_level == "high" and (seed % 9 == 0)) else 0)
+                    alpha = int((20 + (30 * parallax)) * twinkle)
+
+                    if self.graphics_level == "high" and (seed % 4 == 0):
+                        tail = int((7 + (seed % 5)) * parallax)
+                        prev_x = int((px - tail) % max(1, self.width))
+                        trail_color = self._mix(particle_color, self.bg_color, 0.55)
+                        pygame.draw.line(
+                            self.screen,
+                            (trail_color.r, trail_color.g, trail_color.b, max(12, alpha // 2)),
+                            (prev_x, py),
+                            (px, py),
+                            1,
+                        )
+
+                    layer = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+                    pygame.draw.circle(
+                        layer,
+                        (particle_color.r, particle_color.g, particle_color.b, alpha),
+                        (radius * 2, radius * 2),
+                        radius,
+                    )
+                    self.screen.blit(layer, (px - (radius * 2), py - (radius * 2)))
+
+    def _draw_feedback_overlay(self) -> None:
+        energy = max(self.feedback_flash * 0.95, self.command_flash * 0.75, self.typing_glow * 0.5)
+        if energy <= 0.01:
+            return
+
+        overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        glow_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.28)
+        alpha = int(58 * min(1.0, energy))
+
+        input_center = (self.width // 2, int(self.height * 0.84))
+        input_radius = max(self._scale_px(120), int(self.width * 0.19))
+        pygame.draw.circle(
+            overlay,
+            (glow_color.r, glow_color.g, glow_color.b, alpha),
+            input_center,
+            input_radius,
+        )
+
+        header_center = (self.width // 2, int(self._scale_px(40)))
+        header_radius = max(self._scale_px(64), int(self.width * 0.11))
+        pygame.draw.circle(
+            overlay,
+            (glow_color.r, glow_color.g, glow_color.b, int(alpha * 0.55)),
+            header_center,
+            header_radius,
+        )
+
+        self.screen.blit(overlay, (0, 0))
 
     def _draw_panel(self, rect: pygame.Rect) -> None:
         radius = self._scale_px(9)
@@ -732,6 +832,18 @@ class ConsoleUI:
         )
         pygame.draw.rect(self.screen, self.panel_color, rect, border_radius=radius)
         pygame.draw.rect(self.screen, self.accent_color, rect, width=1, border_radius=radius)
+        if self.feedback_flash > 0.0:
+            edge_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2)
+            glow_alpha = int(34 * min(1.0, self.feedback_flash))
+            if glow_alpha > 0:
+                glow_layer = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                pygame.draw.rect(
+                    glow_layer,
+                    (edge_color.r, edge_color.g, edge_color.b, glow_alpha),
+                    glow_layer.get_rect(),
+                    border_radius=radius,
+                )
+                self.screen.blit(glow_layer, rect.topleft)
         if self.command_flash > 0.0:
             pulse = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2)
             thickness = 1 + int(self.command_flash * 1.8)
@@ -802,8 +914,24 @@ class ConsoleUI:
             self.screen.blit(text_surface, (rect.x + self._scale_px(10) + offset_x, y))
             y += line_h
 
+        if self.graphics_level in {"medium", "high"}:
+            sweep_ratio = 0.5 + (0.5 * math.sin((self.animation_phase * 0.8) + 1.4))
+            sweep_y = rect.y + int(sweep_ratio * max(1, rect.height - 1))
+            sweep_color = self._mix(self.accent_color, self.bg_color, 0.62)
+            sweep_alpha = int(38 + (42 * self.feedback_flash))
+            sweep_layer = pygame.Surface((rect.width - self._scale_px(10), self._scale_px(2)), pygame.SRCALPHA)
+            pygame.draw.rect(
+                sweep_layer,
+                (sweep_color.r, sweep_color.g, sweep_color.b, max(16, sweep_alpha)),
+                sweep_layer.get_rect(),
+                border_radius=self._scale_px(2),
+            )
+            self.screen.blit(sweep_layer, (rect.x + self._scale_px(5), sweep_y))
+
     def _draw_input(self, rect: pygame.Rect) -> None:
-        prompt_surface = self.status_font.render(self.prompt_text, True, self.accent_color)
+        prompt_pulse = 0.65 + (0.35 * (0.5 + 0.5 * math.sin((self.animation_phase * 3.4) + 0.2)))
+        prompt_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2 * prompt_pulse)
+        prompt_surface = self.status_font.render(self.prompt_text, True, prompt_color)
         self.screen.blit(prompt_surface, (rect.x + self._scale_px(10), rect.y + self._scale_px(12)))
 
         raw_text = self.input_buffer
@@ -819,9 +947,10 @@ class ConsoleUI:
         if self.input_enabled and self.cursor_visible:
             cursor_x = text_x + text_surface.get_width() + self._scale_px(2)
             cursor_h = self.status_font.get_height() - self._scale_px(3)
+            cursor_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.22 * prompt_pulse)
             pygame.draw.line(
                 self.screen,
-                self.accent_color,
+                cursor_color,
                 (cursor_x, text_y + self._scale_px(1)),
                 (cursor_x, text_y + cursor_h),
                 width=max(1, self._scale_px(2)),
@@ -843,9 +972,45 @@ class ConsoleUI:
                 (rect.x + self._scale_px(8), rect.bottom - self._scale_px(8)),
             )
 
+        if self.graphics_level != "low":
+            line_w = rect.width - self._scale_px(16)
+            base_y = rect.bottom - self._scale_px(10)
+            scan_mix = 0.12 + (0.2 * (0.5 + 0.5 * math.sin(self.animation_phase * 4.1)))
+            scan_color = self._mix(self.dim_color, self.accent_color, scan_mix)
+            pygame.draw.line(
+                self.screen,
+                scan_color,
+                (rect.x + self._scale_px(8), base_y),
+                (rect.x + self._scale_px(8) + line_w, base_y),
+                1,
+            )
+
     def _draw_status(self, rect: pygame.Rect) -> None:
-        status_surface = self.status_font.render(self.status_text, True, self.dim_color)
+        pulse = 0.4 + (0.6 * (0.5 + 0.5 * math.sin((self.animation_phase * 2.2) + 1.1)))
+        ratio = min(1.0, self.status_flash + (self.feedback_flash * 0.55))
+        status_color = self._mix(self.dim_color, self.accent_color, (0.08 * pulse) + (0.42 * ratio))
+        status_surface = self.status_font.render(self.status_text, True, status_color)
         self.screen.blit(status_surface, (rect.x + self._scale_px(10), rect.y + self._scale_px(6)))
+
+        if self.graphics_level != "low":
+            dot_count = 3
+            dot_gap = self._scale_px(8)
+            start_x = rect.right - self._scale_px(14) - ((dot_count - 1) * dot_gap)
+            cy = rect.y + (rect.height // 2)
+            for idx in range(dot_count):
+                phase = (self.animation_phase * 4.8) + (idx * 0.42)
+                glow = 0.25 + (0.75 * (0.5 + 0.5 * math.sin(phase)))
+                radius = 1 + int(glow > 0.72)
+                dot_alpha = int(70 + (110 * glow * max(0.25, ratio)))
+                dot_color = self._mix(self.accent_color, self.fg_color, 0.3 + (0.25 * glow))
+                layer = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+                pygame.draw.circle(
+                    layer,
+                    (dot_color.r, dot_color.g, dot_color.b, max(28, dot_alpha)),
+                    (radius * 2, radius * 2),
+                    radius,
+                )
+                self.screen.blit(layer, (start_x + (idx * dot_gap), cy - (radius * 2)))
 
     def _apply_panel_entry_animation(
         self,

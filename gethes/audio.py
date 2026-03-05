@@ -130,7 +130,7 @@ class AudioManager:
         return sorted(EVENT_FILES)
 
     def loaded_events(self) -> list[str]:
-        return sorted(self.sounds)
+        return sorted(self.loaded_paths)
 
     def loaded_files(self) -> dict[str, str]:
         return {event: path.name for event, path in self.loaded_paths.items()}

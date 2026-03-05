@@ -125,6 +125,10 @@ class GethesApp:
         self.idle_count = 0
         self.intro_active = False
         self.last_command = "menu"
+        self.syster_auto_pending = False
+        self.syster_last_auto_ts = 0.0
+        self.syster_auto_cooldown = 7.0
+        self.syster_commands_since_auto = 0
 
         self._migrate_legacy_theme()
         self._refresh_ui_language()
@@ -158,6 +162,7 @@ class GethesApp:
             self.snake.update(dt)
         if self.physics_lab.active:
             self.physics_lab.update(dt)
+        self._update_syster_autochat()
 
     def set_input_handler(self, handler: Callable[[str], None]) -> None:
         self.input_handler = handler
@@ -508,6 +513,9 @@ class GethesApp:
         ):
             return
 
+        if self._trigger_syster_auto("idle"):
+            return
+
         if self.idle_count % 3 == 2:
             self.ui.write(self.tr("app.idle.secret"))
         else:
@@ -534,6 +542,7 @@ class GethesApp:
         args = parts[1:]
         if cmd != "syster":
             self.last_command = cmd
+            self._queue_syster_auto_from_command(cmd)
 
         if cmd in {"help", "ayuda", "ajuda", "?"}:
             self.ui.write(self._help_text())
@@ -548,7 +557,7 @@ class GethesApp:
             return
 
         if cmd in {"vmenu", "menuui", "visualmenu"}:
-            self._open_visual_menu()
+            self.ui.write(self.tr("app.vmenu_removed"))
             return
 
         if cmd == "snake":
@@ -675,31 +684,72 @@ class GethesApp:
 
         self.ui.write(self.tr("app.unknown", cmd=cmd))
 
-    def _open_visual_menu(self) -> None:
-        if self.input_handler is not None or self.boot_active or self.intro_active:
+    def _queue_syster_auto_from_command(self, cmd: str) -> None:
+        if self.syster.mode == "off":
             return
-        if not self.ui.supports_visual_menu():
-            self.ui.write(self.tr("app.vmenu.unavailable"))
+        if cmd in {"syster", "save", "savegame", "exit", "salir", "sair", "quit"}:
             return
 
-        selected = self.ui.open_visual_menu(
-            title=self.tr("app.vmenu.title"),
-            items=[
-                (self.tr("app.vmenu.item.snake"), "snake"),
-                (self.tr("app.vmenu.item.hangman1"), "ahorcado1"),
-                (self.tr("app.vmenu.item.hangman2"), "ahorcado2"),
-                (self.tr("app.vmenu.item.tictactoe"), "gato"),
-                (self.tr("app.vmenu.item.codebreaker"), "codigo"),
-                (self.tr("app.vmenu.item.physics"), "physics"),
-                (self.tr("app.vmenu.item.story"), "historia"),
-                (self.tr("app.vmenu.item.achievements"), "logros"),
-                (self.tr("app.vmenu.item.options"), "options"),
-                (self.tr("app.vmenu.item.help"), "help"),
-            ],
-            back_label=self.tr("app.vmenu.back"),
+        self.syster_commands_since_auto += 1
+        if self.syster_commands_since_auto >= 2:
+            self.syster_commands_since_auto = 0
+            self.syster_auto_pending = True
+
+    def _update_syster_autochat(self) -> None:
+        if not self.syster_auto_pending:
+            return
+        if self._trigger_syster_auto("command"):
+            self.syster_auto_pending = False
+
+    def _syster_auto_prompt(self, trigger: str) -> str:
+        if trigger == "boot":
+            return "hola"
+        if trigger == "idle":
+            return "help"
+
+        cmd = self.last_command
+        if cmd in {"snake", "ahorcado1", "ahorcado2", "gato", "tictactoe", "codigo", "codebreaker", "physics"}:
+            return "games"
+        if cmd in {"options", "opciones", "theme", "graphics", "sound", "lang", "uiscale"}:
+            return "settings"
+        if cmd in {"historia", "story"}:
+            return "story"
+        if cmd in {"sfx"}:
+            return "audio"
+        if cmd in {"update", "actualizar", "atualizar"}:
+            return "update"
+        return "help"
+
+    def _trigger_syster_auto(self, trigger: str) -> bool:
+        if self.syster.mode == "off":
+            return False
+        if (
+            self.intro_active
+            or self.boot_active
+            or self.snake.active
+            or self.physics_lab.active
+            or self.input_handler is not None
+        ):
+            return False
+
+        now = time.monotonic()
+        if trigger != "boot" and (now - self.syster_last_auto_ts) < self.syster_auto_cooldown:
+            return False
+
+        prompt = self._syster_auto_prompt(trigger)
+        reply = self.syster.reply(
+            prompt,
+            lambda key, **kwargs: self.tr(key, **kwargs),
+            context=self._build_syster_context(),
         )
-        if selected:
-            self._on_command(selected)
+        if not reply.strip():
+            return False
+
+        self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
+        self.ui.write(reply)
+        self.audio.play("message")
+        self.syster_last_auto_ts = now
+        return True
 
     def _handle_syster(self, args: list[str]) -> None:
         if not args:
@@ -1930,6 +1980,7 @@ class GethesApp:
         self.ui.set_entry_enabled(True)
         self.audio.play("success")
         self._unlock_achievement("boot_sequence")
+        self._trigger_syster_auto("boot")
         self._trigger_auto_update_check()
 
     def _boot_delay_ms(self) -> int:
@@ -1998,7 +2049,6 @@ class GethesApp:
                 "- `codigo` / `codebreaker`",
                 "- `physics`",
                 "- `historia`",
-                "- `vmenu`",
                 "",
                 self.tr("app.welcome.saves"),
                 "- `slots`",
@@ -2017,7 +2067,6 @@ class GethesApp:
                 f"- help                     : {self.tr('app.help.help')}",
                 f"- clear                    : {self.tr('app.help.clear')}",
                 f"- menu                     : {self.tr('app.help.menu')}",
-                f"- vmenu                    : {self.tr('app.help.vmenu')}",
                 f"- snake                    : {self.tr('app.help.snake')}",
                 f"- ahorcado1 / hangman1     : {self.tr('app.help.hangman1')}",
                 f"- ahorcado2 / hangman2     : {self.tr('app.help.hangman2')}",
