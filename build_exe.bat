@@ -8,6 +8,7 @@ if "%~1"=="" goto run
 if /I "%~1"=="onefile" set ARG=%ARG% -OneFile
 if /I "%~1"=="clean" set ARG=%ARG% -Clean
 if /I "%~1"=="installer" set ARG=%ARG% -Installer
+if /I "%~1"=="noinstaller" set ARG=%ARG% -NoInstaller
 if /I "%~1"=="autoinno" set ARG=%ARG% -AutoInstallInno
 if /I "%~1"=="nozip" set ARG=%ARG% -NoZip
 shift

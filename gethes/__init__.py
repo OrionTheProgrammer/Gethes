@@ -11,5 +11,6 @@ __all__ = [
     "runtime_paths",
     "save_system",
     "syster",
+    "updater",
     "ui",
 ]

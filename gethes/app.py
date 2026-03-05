@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import queue
 import shlex
+import threading
+from pathlib import Path
 from typing import Callable
 
 from gethes import __version__
@@ -22,6 +26,7 @@ from gethes.runtime_paths import resource_package_dir, user_data_dir
 from gethes.save_system import SaveManager
 from gethes.story.story_mode import StoryMode
 from gethes.syster import SysterAssistant, SysterContext
+from gethes.updater import UpdateInfo, UpdateManager
 from gethes.ui import ConsoleUI
 
 
@@ -32,6 +37,7 @@ THEME_PRESETS: dict[str, tuple[str, str]] = {
     "matrix": ("#050A07", "#7AF57C"),
     "amber": ("#0D0905", "#FFCF84"),
 }
+DEFAULT_UPDATE_REPO = "OrionTheProgrammer/Gethes"
 
 
 class GethesApp:
@@ -46,6 +52,24 @@ class GethesApp:
         self.i18n = I18n.from_mode(self.config.language)
         self.audio = AudioManager(enabled=self.config.sound)
         self.input_handler: Callable[[str], None] | None = None
+        self.update_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
+        self.update_check_running = False
+        self.update_install_running = False
+        self.update_install_after_check = False
+        self.auto_update_check_done = False
+        self.pending_update: UpdateInfo | None = None
+        self.update_last_status = "idle"
+        self.update_download_dir = self.storage_dir / "updates"
+        update_repo = (
+            self.config.update_repo
+            or os.getenv("GETHES_UPDATE_REPO", "")
+            or DEFAULT_UPDATE_REPO
+        )
+        self.update_manager = UpdateManager(
+            current_version=__version__,
+            repo=update_repo,
+        )
+        self.config.update_repo = self.update_manager.repo
 
         self.save_manager = SaveManager(self.storage_dir / "saves", slots=3)
         self.current_slot = self.save_manager.load_slot(self._clamp_slot(self.config.active_slot))
@@ -93,6 +117,7 @@ class GethesApp:
         self.ui.run(update_callback=self._update)
 
     def _update(self, dt: float) -> None:
+        self._process_update_events()
         if self.intro_active:
             if self.ui.update_intro(dt):
                 self.intro_active = False
@@ -362,6 +387,10 @@ class GethesApp:
 
         if cmd in {"lang", "language", "idioma", "lingua"}:
             self._set_language(args)
+            return
+
+        if cmd in {"update", "actualizar", "atualizar"}:
+            self._handle_update(args)
             return
 
         if cmd == "sfx":
@@ -824,6 +853,298 @@ class GethesApp:
         )
         self.ui.write(self._options_text())
 
+    def _handle_update(self, args: list[str]) -> None:
+        if not args:
+            self._show_update_status()
+            self.ui.write(self.tr("app.update.usage"))
+            return
+
+        action = args[0].lower()
+        if action in {"status", "info"}:
+            self._show_update_status()
+            return
+
+        if action == "check":
+            self._start_update_check(user_feedback=True)
+            return
+
+        if action == "install":
+            self._start_update_install()
+            return
+
+        if action == "repo":
+            self._handle_update_repo(args[1:])
+            return
+
+        if action == "auto":
+            self._handle_update_auto(args[1:])
+            return
+
+        self.ui.write(self.tr("app.update.usage"))
+
+    def _handle_update_repo(self, args: list[str]) -> None:
+        if not args:
+            repo = self.update_manager.repo or "-"
+            self.ui.write(self.tr("app.update.repo_status", repo=repo))
+            return
+
+        token = " ".join(args).strip()
+        if token.lower() in {"off", "none", "clear", "reset"}:
+            self.update_manager.clear_repo()
+            self.config.update_repo = ""
+            self._save_config()
+            self.ui.write(self.tr("app.update.repo_cleared"))
+            return
+
+        if not self.update_manager.set_repo(token):
+            self.ui.write(self.tr("app.update.repo_invalid"))
+            return
+
+        self.config.update_repo = self.update_manager.repo
+        self._save_config()
+        self.ui.write(self.tr("app.update.repo_set", repo=self.update_manager.repo))
+
+    def _handle_update_auto(self, args: list[str]) -> None:
+        if not args:
+            state = "ON" if self.config.auto_update_check else "OFF"
+            self.ui.write(self.tr("app.update.auto_status", value=state))
+            return
+
+        if len(args) != 1:
+            self.ui.write(self.tr("app.update.auto_usage"))
+            return
+
+        token = args[0].lower()
+        if token not in {"on", "off"}:
+            self.ui.write(self.tr("app.update.auto_usage"))
+            return
+
+        self.config.auto_update_check = token == "on"
+        self._save_config()
+        self.ui.write(
+            self.tr(
+                "app.update.auto_set",
+                value=("ON" if self.config.auto_update_check else "OFF"),
+            )
+        )
+
+    def _show_update_status(self) -> None:
+        self.ui.write(self.tr("app.update.status_title"))
+        repo = self.update_manager.repo or "-"
+        self.ui.write(self.tr("app.update.repo_status", repo=repo))
+        self.ui.write(self.tr("app.update.current_version", version=__version__))
+        self.ui.write(
+            self.tr(
+                "app.update.auto_status",
+                value=("ON" if self.config.auto_update_check else "OFF"),
+            )
+        )
+
+        if self.pending_update is None:
+            self.ui.write(self.tr("app.update.status_none"))
+            return
+
+        self.ui.write(
+            self.tr(
+                "app.update.status_available",
+                version=self.pending_update.latest_version,
+            )
+        )
+        self.ui.write(self.tr("app.update.install_hint"))
+
+    def _start_update_check(self, user_feedback: bool) -> None:
+        if self.update_check_running or self.update_install_running:
+            if user_feedback:
+                self.ui.write(self.tr("app.update.busy"))
+            return
+
+        if not self.update_manager.has_repo():
+            if user_feedback:
+                self.ui.write(self.tr("app.update.repo_missing"))
+                self.ui.write(self.tr("app.update.repo_hint"))
+            return
+
+        self.update_check_running = True
+        if user_feedback:
+            self.ui.write(self.tr("app.update.checking"))
+            self.ui.set_status(self.tr("app.update.status_checking"))
+
+        def worker() -> None:
+            status, info = self.update_manager.check_latest()
+            self.update_events.put(
+                (
+                    "check_result",
+                    {
+                        "status": status,
+                        "info": info,
+                        "user_feedback": user_feedback,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-update-check").start()
+
+    def _start_update_install(self) -> None:
+        if self.update_install_running:
+            self.ui.write(self.tr("app.update.busy"))
+            return
+
+        if self.pending_update is None:
+            self.update_install_after_check = True
+            self._start_update_check(user_feedback=True)
+            return
+
+        self._start_update_download(self.pending_update)
+
+    def _start_update_download(self, update: UpdateInfo) -> None:
+        if self.update_install_running:
+            self.ui.write(self.tr("app.update.busy"))
+            return
+
+        self.update_install_running = True
+        self.ui.write(self.tr("app.update.downloading", version=update.latest_version))
+        self.ui.set_status(self.tr("app.update.status_downloading"))
+
+        def worker() -> None:
+            try:
+                installer = self.update_manager.download_installer(update, self.update_download_dir)
+                self.update_events.put(
+                    (
+                        "install_downloaded",
+                        {
+                            "path": str(installer),
+                            "version": update.latest_version,
+                        },
+                    )
+                )
+            except RuntimeError as exc:
+                self.update_events.put(
+                    (
+                        "install_failed",
+                        {
+                            "error": str(exc),
+                        },
+                    )
+                )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-update-install").start()
+
+    def _process_update_events(self) -> None:
+        while True:
+            try:
+                event, payload = self.update_events.get_nowait()
+            except queue.Empty:
+                return
+
+            if event == "check_result":
+                self._consume_update_check_result(payload)
+                continue
+
+            if event == "install_downloaded":
+                self._consume_update_downloaded(payload)
+                continue
+
+            if event == "install_failed":
+                self._consume_update_install_failed(payload)
+                continue
+
+    def _consume_update_check_result(self, payload: dict[str, object]) -> None:
+        self.update_check_running = False
+        self.ui.set_status(self.tr("ui.ready"))
+
+        status = str(payload.get("status", "invalid_response"))
+        info = payload.get("info")
+        user_feedback = bool(payload.get("user_feedback", False))
+        self.update_last_status = status
+
+        if status == "available" and isinstance(info, UpdateInfo):
+            self.pending_update = info
+            if user_feedback:
+                self.ui.write(
+                    self.tr(
+                        "app.update.available",
+                        version=info.latest_version,
+                        current=info.current_version,
+                    )
+                )
+                self.ui.write(self.tr("app.update.install_hint"))
+            else:
+                self.ui.push_notification(
+                    self.tr("app.update.toast_title"),
+                    self.tr("app.update.toast_body", version=info.latest_version),
+                    icon_key="mdi:information-outline",
+                )
+            if self.update_install_after_check:
+                self.update_install_after_check = False
+                self._start_update_download(info)
+            return
+
+        if status == "up_to_date":
+            if isinstance(info, UpdateInfo):
+                self.pending_update = None
+            if user_feedback:
+                self.ui.write(self.tr("app.update.latest", version=__version__))
+            self.update_install_after_check = False
+            return
+
+        self.pending_update = None
+        if self.update_install_after_check:
+            self.update_install_after_check = False
+
+        if not user_feedback:
+            return
+
+        if status == "repo_missing":
+            self.ui.write(self.tr("app.update.repo_missing"))
+            self.ui.write(self.tr("app.update.repo_hint"))
+            return
+        if status == "installer_missing":
+            self.ui.write(self.tr("app.update.installer_missing"))
+            return
+        if status == "network_error":
+            self.ui.write(self.tr("app.update.network_error"))
+            return
+        self.ui.write(self.tr("app.update.invalid_response"))
+
+    def _consume_update_downloaded(self, payload: dict[str, object]) -> None:
+        self.update_install_running = False
+
+        raw_path = payload.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            self.ui.write(self.tr("app.update.launch_failed"))
+            self.ui.set_status(self.tr("ui.ready"))
+            return
+
+        installer_path = Path(raw_path)
+        if not self.update_manager.launch_installer(installer_path):
+            self.ui.write(self.tr("app.update.launch_failed"))
+            self.ui.set_status(self.tr("ui.ready"))
+            return
+
+        self.ui.write(self.tr("app.update.launching"))
+        self.ui.write(self.tr("app.update.installing_exit"))
+        self._shutdown()
+        self.ui.request_quit()
+
+    def _consume_update_install_failed(self, payload: dict[str, object]) -> None:
+        self.update_install_running = False
+        self.ui.set_status(self.tr("ui.ready"))
+        error_msg = str(payload.get("error", "")).strip()
+        if error_msg:
+            self.ui.write(self.tr("app.update.download_failed", error=error_msg))
+        else:
+            self.ui.write(self.tr("app.update.download_failed", error="unknown"))
+
+    def _trigger_auto_update_check(self) -> None:
+        if self.auto_update_check_done:
+            return
+        self.auto_update_check_done = True
+        if not self.config.auto_update_check:
+            return
+        if not self.update_manager.has_repo():
+            return
+        self._start_update_check(user_feedback=False)
+
     def _resolve_font_family(self, requested: str) -> str | None:
         requested_cf = requested.casefold()
         for family in self.ui.available_fonts():
@@ -865,6 +1186,7 @@ class GethesApp:
         self.config.active_slot = self.current_slot.slot_id
         self.config.syster_mode = self.syster.mode
         self.config.syster_endpoint = self.syster.remote_endpoint
+        self.config.update_repo = self.update_manager.repo
         self.config_store.save(self.config)
 
     def _shutdown(self) -> None:
@@ -925,6 +1247,7 @@ class GethesApp:
         self.ui.set_entry_enabled(True)
         self.audio.play("success")
         self._unlock_achievement("boot_sequence")
+        self._trigger_auto_update_check()
 
     def _boot_delay_ms(self) -> int:
         delay_by_graphics = {
@@ -1030,6 +1353,7 @@ class GethesApp:
                 f"- font <familia> [tamano]  : {self.tr('app.help.font')}",
                 f"- fonts [filtro]           : {self.tr('app.help.fonts')}",
                 f"- lang [auto|es|en|pt]     : {self.tr('app.help.lang')}",
+                f"- update ...               : {self.tr('app.help.update')}",
                 f"- syster ...               : {self.tr('app.help.syster')}",
                 f"- syster endpoint <url|off>: {self.tr('app.help.syster_endpoint')}",
                 f"- sfx                      : {self.tr('app.help.sfx')}",
@@ -1059,6 +1383,8 @@ class GethesApp:
                 f"- {self.tr('app.options.language'):13}: {self.config.language} -> {self.i18n.active_language}",
                 f"- {self.tr('app.options.syster'):13}: {self.syster.mode}",
                 f"- {self.tr('app.options.syster_remote'):13}: {remote_state}",
+                f"- {self.tr('app.options.update_auto'):13}: {'ON' if self.config.auto_update_check else 'OFF'}",
+                f"- {self.tr('app.options.update_repo'):13}: {self.update_manager.repo or '-'}",
                 f"- {self.tr('app.options.achievements'):13}: {unlocked_count(self.current_slot.flags)}/{len(ACHIEVEMENTS)}",
                 f"- {self.tr('app.options.storage'):13}: {self.storage_dir}",
             ]

@@ -51,6 +51,11 @@ python main.py
 - `uiscale <valor>`
 - `options`
 - `graphics <low|medium|high>`
+- `update status`
+- `update check`
+- `update install`
+- `update repo <owner/repo>`
+- `update auto <on|off>`
 - `syster mode <off|lite|lore|hybrid>`
 - `syster endpoint <url|off>`
 - `slots`
@@ -77,7 +82,7 @@ $env:GETHES_SYSTER_ENDPOINT=\"https://tu-endpoint\"
 ```
 
 Por defecto construye `--onedir` y `--noupx` para reducir falsos positivos.
-Ademas genera un ZIP portable en `release\` para compartirlo sin romper la estructura.
+Ademas genera ZIP portable y, por defecto, intenta generar tambien instalador (`Setup`) para distribucion.
 
 Para generar instalador (usuarios finales, experiencia mas simple):
 
@@ -89,6 +94,12 @@ Si no tienes Inno Setup, el script puede intentar instalarlo automaticamente:
 
 ```powershell
 .\build_exe.ps1 -Installer -AutoInstallInno
+```
+
+Si quieres solo version portable y sin instalador:
+
+```powershell
+.\build_exe.ps1 -NoInstaller
 ```
 
 Salida esperada:
@@ -149,6 +160,12 @@ Auto instalacion de Inno Setup:
 build_exe.bat clean installer autoinno
 ```
 
+Solo portable (sin setup):
+
+```bat
+build_exe.bat clean noinstaller
+```
+
 ## Error comun: "Failed to load Python DLL ... _internal\\python313.dll"
 
 Ese error ocurre cuando se ejecuta el `.exe` sin su carpeta `_internal` (o un antivirus elimina DLLs).
@@ -170,3 +187,31 @@ Mitigaciones reales:
 3. Firmar digitalmente el `.exe` con certificado valido.
 4. Mantener hash/version estables por release.
 5. Si hay falso positivo, enviar muestra a Microsoft Defender para revision.
+
+## Actualizacion automatica (GitHub Releases)
+
+El actualizador integrado consulta GitHub Releases y descarga el instalador de la version mas reciente.
+
+Requisitos de release:
+1. Publicar tag de version (ejemplo: `v0.02`).
+2. Adjuntar un asset instalador `.exe` (ejemplo: `Gethes-Setup-v0.02.exe`).
+
+Configurar repositorio dentro del juego:
+
+```text
+update repo TU_USUARIO/TU_REPO
+update auto on
+```
+
+Opcional por variable de entorno:
+
+```powershell
+$env:GETHES_UPDATE_REPO=\"TU_USUARIO/TU_REPO\"
+```
+
+Actualizar manualmente:
+
+```text
+update check
+update install
+```

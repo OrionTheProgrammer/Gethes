@@ -3,6 +3,7 @@ param(
     [switch]$Clean,
     [switch]$NoZip,
     [switch]$Installer,
+    [switch]$NoInstaller,
     [switch]$AutoInstallInno,
     [string]$PfxPath = "",
     [string]$PfxPassword = "",
@@ -28,8 +29,9 @@ function Resolve-Iscc {
     }
 
     $candidates = @(
-        "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
     )
     foreach ($candidate in $candidates) {
         if (Test-Path $candidate) {
@@ -120,6 +122,10 @@ function Sign-Target {
 $mode = "--onedir"
 if ($OneFile) {
     $mode = "--onefile"
+}
+
+if (-not $OneFile -and -not $NoInstaller) {
+    $Installer = $true
 }
 
 $args = @(

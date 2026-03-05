@@ -22,6 +22,8 @@ class GameConfig:
     active_slot: int = 1
     syster_mode: str = "lite"
     syster_endpoint: str = ""
+    update_repo: str = "OrionTheProgrammer/Gethes"
+    auto_update_check: bool = True
     ui_scale: float = 1.0
 
 
@@ -73,6 +75,14 @@ class ConfigStore:
         syster_endpoint = payload.get("syster_endpoint")
         if isinstance(syster_endpoint, str):
             cfg.syster_endpoint = syster_endpoint.strip()
+
+        update_repo = payload.get("update_repo")
+        if isinstance(update_repo, str):
+            cfg.update_repo = update_repo.strip()
+
+        auto_update_check = payload.get("auto_update_check")
+        if isinstance(auto_update_check, bool):
+            cfg.auto_update_check = auto_update_check
 
         ui_scale = payload.get("ui_scale")
         if isinstance(ui_scale, (int, float)) and 0.7 <= float(ui_scale) <= 2.5:
