@@ -1,0 +1,2 @@
+a62b3adbd1a977ab9d1244ccd5f5d0de8f77d8e4fef63f5f9681db32b2a3fbf6  Gethes-Setup-v0.01.exe
+d93b178cbe2bb170c4ab97b98f943fe3c98897e1d667032819522675e747f1d7  Gethes-v0.01-win64-portable.zip
