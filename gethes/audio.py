@@ -25,6 +25,23 @@ EVENT_FILES: dict[str, str] = {
     "achievement": "Logros.wav",
 }
 AUDIO_EXTENSIONS = (".wav", ".ogg", ".mp3")
+EVENT_COOLDOWNS: dict[str, float] = {
+    "typing": 0.028,
+    "message": 0.07,
+    "error": 0.12,
+    "success": 0.08,
+}
+EVENT_VOLUMES: dict[str, float] = {
+    "typing": 0.45,
+    "message": 0.72,
+    "error": 0.95,
+    "success": 0.82,
+    "hit": 0.80,
+    "achievement": 0.92,
+    "game_over": 0.94,
+    "intro": 0.90,
+}
+FORCED_CHANNEL_EVENTS = {"intro", "error", "achievement", "game_over"}
 
 
 class AudioManager:
@@ -40,6 +57,7 @@ class AudioManager:
         self.event_overrides: dict[str, str] = {}
         self._mini_lock = threading.Lock()
         self._mini_playbacks: list[tuple[object, object, float]] = []
+        self._last_play_times: dict[str, float] = {}
 
     def initialize(
         self,
@@ -53,6 +71,7 @@ class AudioManager:
         self.loaded_paths = {}
         self.mixer_error = ""
         self.backend_name = "mute"
+        self._last_play_times = {}
         self.set_event_overrides(overrides or {})
         self._stop_all_miniaudio_playbacks()
 
@@ -66,12 +85,18 @@ class AudioManager:
         if init_ok:
             self.mixer_ready = True
             self.backend_name = "pygame"
+            try:
+                pygame.mixer.set_num_channels(28)
+            except pygame.error:
+                pass
             for event_name in EVENT_FILES:
                 for path in self._candidate_paths_for_event(event_name):
                     if not path.exists():
                         continue
                     try:
-                        self.sounds[event_name] = pygame.mixer.Sound(str(path))
+                        sound = pygame.mixer.Sound(str(path))
+                        sound.set_volume(EVENT_VOLUMES.get(event_name, 0.86))
+                        self.sounds[event_name] = sound
                         self.loaded_paths[event_name] = path
                         break
                     except pygame.error:
@@ -112,13 +137,27 @@ class AudioManager:
     def play(self, event: str) -> None:
         if not self.enabled:
             return
+        if event not in EVENT_FILES:
+            return
+
+        now = time.monotonic()
+        cooldown = EVENT_COOLDOWNS.get(event, 0.0)
+        last_play = self._last_play_times.get(event, 0.0)
+        if cooldown > 0.0 and (now - last_play) < cooldown:
+            return
+        self._last_play_times[event] = now
 
         if self.backend_name == "pygame" and self.mixer_ready:
             sound = self.sounds.get(event)
             if sound is None:
                 return
             try:
-                sound.play()
+                force_channel = event in FORCED_CHANNEL_EVENTS
+                channel = pygame.mixer.find_channel(force=force_channel)
+                if channel is not None:
+                    channel.play(sound)
+                else:
+                    sound.play()
             except pygame.error:
                 return
             return

@@ -205,11 +205,18 @@ class GethesApp:
         self.update_check_running = False
         self.update_install_running = False
         self.update_install_after_check = False
+        self.update_install_require_checksum = True
+        self.update_prepare_after_check = False
+        self.update_prepare_require_checksum = True
         self.update_cancel_event: threading.Event | None = None
         self.update_downloaded_bytes = 0
         self.update_download_total_bytes = 0
         self.auto_update_check_done = False
         self.pending_update: UpdateInfo | None = None
+        self.prepared_update_path: Path | None = None
+        self.prepared_update_method = ""
+        self.prepared_update_version = ""
+        self.prepared_update_checksum_status = ""
         self.update_last_status = "idle"
         self.update_download_dir = self.storage_dir / "updates"
         update_repo = (
@@ -914,6 +921,10 @@ class GethesApp:
             self.ui.write(self._options_text())
             return
 
+        if cmd in {"doctor", "diag", "diagnostic"}:
+            self._handle_doctor(args)
+            return
+
         if cmd == "modsreload":
             self._handle_mods(["reload"])
             return
@@ -1048,6 +1059,9 @@ class GethesApp:
             "opciones",
             "options",
             "opcoes",
+            "doctor",
+            "diag",
+            "diagnostic",
             "modsreload",
             "mods",
             "logros",
@@ -1311,6 +1325,48 @@ class GethesApp:
         self.audio.play("secret")
         self._save_current_slot(user_feedback=False)
 
+    def _handle_doctor(self, args: list[str]) -> None:
+        section = args[0].strip().lower() if args else "all"
+        if section not in {"all", "audio", "sfx", "update", "ui", "system"}:
+            self.ui.write(self.tr("app.doctor.usage"))
+            return
+
+        self.ui.write(self.tr("app.doctor.title"))
+        self.ui.write(
+            self.tr(
+                "app.doctor.core",
+                version=__version__,
+                slot=self.current_slot.slot_id,
+                route=self.current_slot.route_name,
+                language=self.i18n.active_language,
+            )
+        )
+
+        if section in {"all", "ui", "system"}:
+            width, height = self.ui.get_window_size()
+            ui_user, ui_responsive, ui_effective = self.ui.get_scale_snapshot()
+            self.ui.write(
+                self.tr(
+                    "app.doctor.ui",
+                    width=width,
+                    height=height,
+                    fullscreen=("ON" if self.ui.is_fullscreen() else "OFF"),
+                    ui_user=f"{ui_user:.2f}",
+                    ui_responsive=f"{ui_responsive:.2f}",
+                    ui_effective=f"{ui_effective:.2f}",
+                    fps=self.ui.get_target_fps(),
+                )
+            )
+
+        if section in {"all", "audio", "sfx"}:
+            self._handle_sfx_doctor()
+
+        if section in {"all", "update"}:
+            self._show_update_status()
+
+        if section in {"all", "system"}:
+            self.ui.write(self.tr("app.doctor.paths", storage=str(self.storage_dir), updates=str(self.update_download_dir)))
+
     def _handle_sfx(self, args: list[str]) -> None:
         if not args:
             self._show_sfx_status()
@@ -1375,10 +1431,25 @@ class GethesApp:
         self._show_sfx_status()
         self.ui.write(self.tr("app.sfx.doctor_title"))
         loaded = set(self.audio.loaded_events())
+        critical_events = {"intro", "typing", "message", "error", "achievement"}
+        missing_critical = []
         for event in self.audio.available_events():
-            state = "OK" if event in loaded else "--"
+            if event in loaded:
+                state = "OK"
+            elif event in critical_events:
+                state = "!!"
+                missing_critical.append(event)
+            else:
+                state = "--"
             source = self.audio.source_path_for_event(event)
             self.ui.write(self.tr("app.sfx.doctor_item", state=state, event=event, source=source))
+        if missing_critical:
+            self.ui.write(
+                self.tr(
+                    "app.sfx.doctor_missing_critical",
+                    events=", ".join(sorted(missing_critical)),
+                )
+            )
         if not self.audio.mixer_ready:
             self.ui.write(self.tr("app.sfx.doctor_mixer_off"))
         elif not loaded:
@@ -1731,6 +1802,28 @@ class GethesApp:
             return
 
         token = args[0].strip().lower().replace(",", ".")
+        preset_values = {
+            "small": 0.85,
+            "normal": 1.00,
+            "large": 1.20,
+            "huge": 1.40,
+        }
+        if token in preset_values:
+            value = preset_values[token]
+            self.config.ui_scale = value
+            self._apply_visual_config()
+            self._save_config()
+            self.ui.write(self.tr("app.ui_scale_updated", value=f"{value:.2f}x"))
+            return
+
+        if token in {"auto", "adaptive", "adapt"}:
+            value = self.ui.recommended_user_ui_scale()
+            self.config.ui_scale = value
+            self._apply_visual_config()
+            self._save_config()
+            self.ui.write(self.tr("app.ui_scale_auto", value=f"{value:.2f}x"))
+            return
+
         try:
             if token.endswith("%"):
                 value = float(token[:-1]) / 100.0
@@ -2032,6 +2125,7 @@ class GethesApp:
             return
 
         action = args[0].lower()
+        payload = args[1:]
         if action in {"status", "info"}:
             self._show_update_status()
             return
@@ -2045,7 +2139,23 @@ class GethesApp:
             return
 
         if action == "install":
-            self._start_update_install()
+            require_checksum = self._parse_update_checksum_policy(payload)
+            if require_checksum is None:
+                self.ui.write(self.tr("app.update.usage"))
+                return
+            self._start_update_install(require_checksum=require_checksum)
+            return
+
+        if action == "prepare":
+            require_checksum = self._parse_update_checksum_policy(payload)
+            if require_checksum is None:
+                self.ui.write(self.tr("app.update.usage"))
+                return
+            self._start_update_prepare(require_checksum=require_checksum)
+            return
+
+        if action == "apply":
+            self._start_update_apply_prepared()
             return
 
         if action == "cancel":
@@ -2061,6 +2171,17 @@ class GethesApp:
             return
 
         self.ui.write(self.tr("app.update.usage"))
+
+    @staticmethod
+    def _parse_update_checksum_policy(args: list[str]) -> bool | None:
+        if not args:
+            return True
+        token = args[0].strip().lower()
+        if token in {"strict", "safe", "secure"}:
+            return True
+        if token in {"unsafe", "--unsafe", "nochecksum", "no-checksum", "insecure"}:
+            return False
+        return None
 
     def _handle_update_repo(self, args: list[str]) -> None:
         if not args:
@@ -2119,6 +2240,16 @@ class GethesApp:
                 value=("ON" if self.config.auto_update_check else "OFF"),
             )
         )
+        if self.prepared_update_path is not None and self.prepared_update_path.exists():
+            self.ui.write(
+                self.tr(
+                    "app.update.prepared_status",
+                    version=(self.prepared_update_version or "-"),
+                    method=(self.prepared_update_method or "-"),
+                    path=str(self.prepared_update_path),
+                )
+            )
+            self.ui.write(self.tr("app.update.prepared_hint"))
 
         if self.pending_update is None:
             self.ui.write(self.tr("app.update.status_none"))
@@ -2159,6 +2290,8 @@ class GethesApp:
         if not self.update_install_running or self.update_cancel_event is None:
             self.ui.write(self.tr("app.update.cancel_idle"))
             return
+        self.update_install_after_check = False
+        self.update_prepare_after_check = False
         self.update_cancel_event.set()
         self.ui.write(self.tr("app.update.cancel_request"))
 
@@ -2194,17 +2327,96 @@ class GethesApp:
 
         threading.Thread(target=worker, daemon=True, name="gethes-update-check").start()
 
-    def _start_update_install(self) -> None:
+    def _clear_prepared_update(self) -> None:
+        self.prepared_update_path = None
+        self.prepared_update_method = ""
+        self.prepared_update_version = ""
+        self.prepared_update_checksum_status = ""
+
+    def _start_update_prepare(self, require_checksum: bool = True) -> None:
         if self.update_install_running:
             self.ui.write(self.tr("app.update.busy"))
             return
 
+        self.update_install_after_check = False
         if self.pending_update is None:
-            self.update_install_after_check = True
+            self.update_prepare_after_check = True
+            self.update_prepare_require_checksum = require_checksum
             self._start_update_check(user_feedback=True)
             return
 
-        self._start_update_download(self.pending_update, preferred_method="auto")
+        if (
+            self.prepared_update_path is not None
+            and self.prepared_update_path.exists()
+            and self.prepared_update_version == self.pending_update.latest_version
+        ):
+            self.ui.write(
+                self.tr(
+                    "app.update.prepared_status",
+                    version=self.prepared_update_version,
+                    method=(self.prepared_update_method or "-"),
+                    path=str(self.prepared_update_path),
+                )
+            )
+            self.ui.write(self.tr("app.update.prepared_hint"))
+            return
+
+        self._start_update_download(
+            self.pending_update,
+            preferred_method="auto",
+            apply_after_download=False,
+            require_checksum=require_checksum,
+        )
+
+    def _start_update_apply_prepared(self) -> None:
+        if self.update_install_running:
+            self.ui.write(self.tr("app.update.busy"))
+            return
+        if self.prepared_update_path is None:
+            self.ui.write(self.tr("app.update.prepared_none"))
+            return
+        if not self.prepared_update_path.exists():
+            self._clear_prepared_update()
+            self.ui.write(self.tr("app.update.prepared_missing"))
+            return
+        if (
+            self.pending_update is not None
+            and self.prepared_update_version
+            and self.prepared_update_version != self.pending_update.latest_version
+        ):
+            self._clear_prepared_update()
+            self.ui.write(self.tr("app.update.prepared_outdated"))
+            return
+
+        self.ui.write(self.tr("app.update.prepared_apply"))
+        self._apply_downloaded_update(
+            downloaded_path=self.prepared_update_path,
+            method=self.prepared_update_method or "installer",
+            checksum_status=self.prepared_update_checksum_status,
+        )
+
+    def _start_update_install(self, require_checksum: bool = True) -> None:
+        if self.update_install_running:
+            self.ui.write(self.tr("app.update.busy"))
+            return
+
+        self.update_prepare_after_check = False
+        if self.prepared_update_path is not None and self.prepared_update_path.exists():
+            self._start_update_apply_prepared()
+            return
+
+        if self.pending_update is None:
+            self.update_install_after_check = True
+            self.update_install_require_checksum = require_checksum
+            self._start_update_check(user_feedback=True)
+            return
+
+        self._start_update_download(
+            self.pending_update,
+            preferred_method="auto",
+            apply_after_download=True,
+            require_checksum=require_checksum,
+        )
 
     def _runtime_update_target(self) -> tuple[Path, Path] | None:
         if not getattr(sys, "frozen", False):
@@ -2232,7 +2444,13 @@ class GethesApp:
             return "portable"
         return "none"
 
-    def _start_update_download(self, update: UpdateInfo, preferred_method: str = "auto") -> None:
+    def _start_update_download(
+        self,
+        update: UpdateInfo,
+        preferred_method: str = "auto",
+        apply_after_download: bool = True,
+        require_checksum: bool = True,
+    ) -> None:
         if self.update_install_running:
             self.ui.write(self.tr("app.update.busy"))
             return
@@ -2243,11 +2461,19 @@ class GethesApp:
             self.ui.write(self.tr("app.update.asset_missing"))
             return
 
+        if apply_after_download:
+            self._clear_prepared_update()
+
         self.update_install_running = True
         self.update_cancel_event = threading.Event()
         self.update_downloaded_bytes = 0
         self.update_download_total_bytes = 0
-        self.ui.write(self.tr("app.update.downloading", version=update.latest_version))
+        self.ui.write(
+            self.tr(
+                "app.update.downloading" if apply_after_download else "app.update.preparing",
+                version=update.latest_version,
+            )
+        )
         self.ui.set_status(self.tr("app.update.status_downloading"))
 
         def worker() -> None:
@@ -2271,6 +2497,41 @@ class GethesApp:
                 )
 
             try:
+                cached_asset = self.update_manager.find_cached_download(
+                    update,
+                    self.update_download_dir,
+                    method,
+                )
+                if cached_asset is not None:
+                    self.update_events.put(("download_verifying", {}))
+                    verified, checksum_status = self.update_manager.verify_asset_checksum(
+                        cached_asset,
+                        update,
+                        self.update_download_dir,
+                        cancel_event=self.update_cancel_event,
+                        require_checksum=require_checksum,
+                    )
+                    if verified:
+                        self.update_events.put(
+                            (
+                                "install_downloaded" if apply_after_download else "download_prepared",
+                                {
+                                    "path": str(cached_asset),
+                                    "version": update.latest_version,
+                                    "method": method,
+                                    "checksum_status": checksum_status,
+                                    "cached": True,
+                                },
+                            )
+                        )
+                        return
+                    if checksum_status == "checksum_missing_required":
+                        raise RuntimeError(checksum_status)
+                    try:
+                        cached_asset.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
                 if method == "portable":
                     downloaded = self.update_manager.download_portable_zip(
                         update,
@@ -2292,18 +2553,20 @@ class GethesApp:
                     update,
                     self.update_download_dir,
                     cancel_event=self.update_cancel_event,
+                    require_checksum=require_checksum,
                 )
                 if not verified:
                     raise RuntimeError(checksum_status)
 
                 self.update_events.put(
                     (
-                        "install_downloaded",
+                        "install_downloaded" if apply_after_download else "download_prepared",
                         {
                             "path": str(downloaded),
                             "version": update.latest_version,
                             "method": method,
                             "checksum_status": checksum_status,
+                            "cached": False,
                         },
                     )
                 )
@@ -2337,6 +2600,10 @@ class GethesApp:
 
             if event == "install_downloaded":
                 self._consume_update_downloaded(payload)
+                continue
+
+            if event == "download_prepared":
+                self._consume_update_prepared(payload)
                 continue
 
             if event == "install_failed":
@@ -2417,6 +2684,13 @@ class GethesApp:
 
         if status == "available" and isinstance(info, UpdateInfo):
             self.pending_update = info
+            if (
+                self.prepared_update_path is not None
+                and self.prepared_update_path.exists()
+                and self.prepared_update_version
+                and self.prepared_update_version != info.latest_version
+            ):
+                self._clear_prepared_update()
             if user_feedback:
                 self.ui.write(
                     self.tr(
@@ -2434,7 +2708,18 @@ class GethesApp:
                 )
             if self.update_install_after_check:
                 self.update_install_after_check = False
-                self._start_update_download(info)
+                self._start_update_download(
+                    info,
+                    apply_after_download=True,
+                    require_checksum=self.update_install_require_checksum,
+                )
+            if self.update_prepare_after_check:
+                self.update_prepare_after_check = False
+                self._start_update_download(
+                    info,
+                    apply_after_download=False,
+                    require_checksum=self.update_prepare_require_checksum,
+                )
             return
 
         if status == "up_to_date":
@@ -2443,11 +2728,14 @@ class GethesApp:
             if user_feedback:
                 self.ui.write(self.tr("app.update.latest", version=__version__))
             self.update_install_after_check = False
+            self.update_prepare_after_check = False
             return
 
         self.pending_update = None
         if self.update_install_after_check:
             self.update_install_after_check = False
+        if self.update_prepare_after_check:
+            self.update_prepare_after_check = False
 
         if not user_feedback:
             return
@@ -2464,6 +2752,53 @@ class GethesApp:
             return
         self.ui.write(self.tr("app.update.invalid_response"))
 
+    def _consume_update_prepared(self, payload: dict[str, object]) -> None:
+        self.update_install_running = False
+        self.update_cancel_event = None
+        self.update_downloaded_bytes = 0
+        self.update_download_total_bytes = 0
+        self.ui.set_status(self.tr("ui.ready"))
+
+        raw_path = payload.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            self.ui.write(self.tr("app.update.prepared_missing"))
+            return
+
+        method = str(payload.get("method", "installer")).strip().lower()
+        checksum_status = str(payload.get("checksum_status", "")).strip().lower()
+        version = str(payload.get("version", "")).strip()
+        cached = bool(payload.get("cached", False))
+        prepared_path = Path(raw_path)
+        if not prepared_path.exists():
+            self.ui.write(self.tr("app.update.prepared_missing"))
+            return
+
+        self.prepared_update_path = prepared_path
+        self.prepared_update_method = method
+        self.prepared_update_version = version
+        self.prepared_update_checksum_status = checksum_status
+
+        if checksum_status == "checksum_ok":
+            self.ui.write(self.tr("app.update.checksum_ok"))
+        elif checksum_status in {"checksum_missing", "checksum_missing_required"}:
+            self.ui.write(self.tr("app.update.checksum_missing"))
+
+        self.ui.write(
+            self.tr(
+                "app.update.prepared_done",
+                version=(version or "-"),
+                method=method,
+            )
+        )
+        if cached:
+            self.ui.write(self.tr("app.update.prepared_cached"))
+        self.ui.write(self.tr("app.update.prepared_hint"))
+        self.ui.push_notification(
+            self.tr("app.update.prepared_toast_title"),
+            self.tr("app.update.prepared_toast_body", version=(version or "-")),
+            icon_key="mdi:information-outline",
+        )
+
     def _consume_update_downloaded(self, payload: dict[str, object]) -> None:
         self.update_install_running = False
         self.update_cancel_event = None
@@ -2479,10 +2814,22 @@ class GethesApp:
         method = str(payload.get("method", "installer")).strip().lower()
         checksum_status = str(payload.get("checksum_status", "")).strip().lower()
         downloaded_path = Path(raw_path)
+        if not downloaded_path.exists():
+            self.ui.write(self.tr("app.update.launch_failed"))
+            self.ui.set_status(self.tr("ui.ready"))
+            return
 
+        self._apply_downloaded_update(downloaded_path, method=method, checksum_status=checksum_status)
+
+    def _apply_downloaded_update(
+        self,
+        downloaded_path: Path,
+        method: str,
+        checksum_status: str,
+    ) -> None:
         if checksum_status == "checksum_ok":
             self.ui.write(self.tr("app.update.checksum_ok"))
-        elif checksum_status == "checksum_missing":
+        elif checksum_status in {"checksum_missing", "checksum_missing_required"}:
             self.ui.write(self.tr("app.update.checksum_missing"))
 
         if method == "portable":
@@ -2517,6 +2864,7 @@ class GethesApp:
                     self.ui.set_status(self.tr("ui.ready"))
                 return
 
+            self._clear_prepared_update()
             if launch_status == "launched_elevated":
                 self.ui.write(self.tr("app.update.elevation_requested"))
             self.ui.write(self.tr("app.update.applying_portable"))
@@ -2530,6 +2878,7 @@ class GethesApp:
             self.ui.set_status(self.tr("ui.ready"))
             return
 
+        self._clear_prepared_update()
         self.ui.write(self.tr("app.update.launching_silent"))
         self.ui.write(self.tr("app.update.installing_exit"))
         self._shutdown()
@@ -2796,9 +3145,10 @@ class GethesApp:
             f"- slotname <nombre>        : {self.tr('app.help.slotname')}",
             f"- savegame                 : {self.tr('app.help.savegame')}",
             f"- options / opciones       : {self.tr('app.help.options')}",
+            f"- doctor [all|audio|update|ui]: {self.tr('app.help.doctor')}",
             f"- sound <on|off>           : {self.tr('app.help.sound')}",
             f"- graphics <low|medium|high>: {self.tr('app.help.graphics')}",
-            f"- uiscale <0.7-2.5>        : {self.tr('app.help.uiscale')}",
+            f"- uiscale <0.7-2.5|auto|small|normal|large|huge>: {self.tr('app.help.uiscale')}",
             f"- theme <preset|list|reload|bg fg>: {self.tr('app.help.theme')}",
             f"- bg <color>               : {self.tr('app.help.bg')}",
             f"- fg <color>               : {self.tr('app.help.fg')}",
@@ -2822,6 +3172,7 @@ class GethesApp:
         active_theme = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
         theme_value = active_theme if active_theme != "custom" else self.tr("app.theme_custom")
         remote_state = "ON" if self.syster.has_remote_endpoint() else "OFF"
+        ui_user, ui_responsive, ui_effective = self.ui.get_scale_snapshot()
         return "\n".join(
             [
                 self.tr("app.options.title"),
@@ -2841,6 +3192,12 @@ class GethesApp:
                 f"particles {self.config.theme_particles_strength:.2f}",
                 f"- {self.tr('app.options.themes_count'):13}: {len(self.theme_presets)}",
                 f"- {self.tr('app.options.ui_scale'):13}: {self.config.ui_scale:.2f}x",
+                self.tr(
+                    "app.options.ui_scale_runtime",
+                    user=f"{ui_user:.2f}",
+                    responsive=f"{ui_responsive:.2f}",
+                    effective=f"{ui_effective:.2f}",
+                ),
                 f"- {self.tr('app.options.version'):13}: {__version__}",
                 f"- {self.tr('app.options.language'):13}: {self.config.language} -> {self.i18n.active_language}",
                 f"- {self.tr('app.options.syster'):13}: {self.syster.mode}",

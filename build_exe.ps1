@@ -42,7 +42,7 @@ function Resolve-Iscc {
 }
 
 function Resolve-AppVersion {
-    $version = "0.03"
+    $version = "0.04"
     if (Test-Path "gethes\\__init__.py") {
         $match = Select-String -Path "gethes\\__init__.py" -Pattern '__version__\s*=\s*"([^"]+)"' -AllMatches
         if ($match -and $match.Matches.Count -gt 0) {
@@ -119,6 +119,77 @@ function Sign-Target {
     Write-Host "Firma aplicada: $($sig.Status) | Subject: $($sig.SignerCertificate.Subject)"
 }
 
+function Write-ReleaseChecksums {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArtifactPaths
+    )
+
+    $resolved = @()
+    foreach ($item in $ArtifactPaths) {
+        if ([string]::IsNullOrWhiteSpace($item)) {
+            continue
+        }
+        if (-not (Test-Path $item)) {
+            continue
+        }
+        $resolved += (Resolve-Path $item).Path
+    }
+
+    if ($resolved.Count -eq 0) {
+        Write-Host "Checksum omitido: no hay artefactos de release para registrar."
+        return
+    }
+
+    $releaseDir = "release"
+    New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+
+    $lines = @()
+    foreach ($artifact in ($resolved | Sort-Object -Unique)) {
+        $hash = (Get-FileHash -Path $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+        $name = Split-Path $artifact -Leaf
+        $line = "$hash  $name"
+        $lines += $line
+        Set-Content -Path ($artifact + ".sha256") -Value $line -Encoding ASCII
+    }
+
+    $versioned = Join-Path $releaseDir "SHA256SUMS-v$Version.txt"
+    $latest = Join-Path $releaseDir "SHA256SUMS.txt"
+    Set-Content -Path $versioned -Value $lines -Encoding ASCII
+    Set-Content -Path $latest -Value $lines -Encoding ASCII
+    Write-Host "Checksums listos: $versioned y $latest"
+}
+
+function Compress-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+        [int]$MaxRetries = 6
+    )
+
+    $retries = [Math]::Max(1, $MaxRetries)
+    for ($attempt = 1; $attempt -le $retries; $attempt++) {
+        try {
+            if (Test-Path $DestinationPath) {
+                Remove-Item $DestinationPath -Force -ErrorAction SilentlyContinue
+            }
+            Compress-Archive -Path $Path -DestinationPath $DestinationPath -CompressionLevel Optimal
+            return
+        } catch {
+            if ($attempt -ge $retries) {
+                throw
+            }
+            $waitMs = [Math]::Min(3000, 400 * $attempt)
+            Write-Host "ZIP temporalmente bloqueado ($attempt/$retries). Reintentando en $waitMs ms..."
+            Start-Sleep -Milliseconds $waitMs
+        }
+    }
+}
+
 $mode = "--onedir"
 if ($OneFile) {
     $mode = "--onefile"
@@ -164,6 +235,7 @@ if ($OneFile) {
 Sign-Target -FilePath $exePath
 
 $version = Resolve-AppVersion
+$releaseArtifacts = @()
 
 if (-not $OneFile) {
     $notesPath = "dist\\Gethes\\LEEME-EJECUTAR.txt"
@@ -215,15 +287,17 @@ if (-not $NoZip) {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Compress-Archive -Path "dist\\Gethes.exe" -DestinationPath $zipPath -CompressionLevel Optimal
+        Compress-WithRetry -Path @("dist\\Gethes.exe") -DestinationPath $zipPath
         Write-Host "ZIP listo: $zipPath"
+        $releaseArtifacts += (Resolve-Path $zipPath).Path
     } else {
         $zipPath = "release\\Gethes-v$version-win64-portable.zip"
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Compress-Archive -Path "dist\\Gethes\\*" -DestinationPath $zipPath -CompressionLevel Optimal
+        Compress-WithRetry -Path @("dist\\Gethes\\*") -DestinationPath $zipPath
         Write-Host "ZIP listo: $zipPath"
+        $releaseArtifacts += (Resolve-Path $zipPath).Path
     }
 }
 
@@ -253,9 +327,14 @@ if ($Installer) {
             & $isccPath "/DMyAppVersion=$version" "packaging\\GethesInstaller.iss"
             $setupPath = "release\\Gethes-Setup-v$version.exe"
             Sign-Target -FilePath $setupPath
+            if (Test-Path $setupPath) {
+                $releaseArtifacts += (Resolve-Path $setupPath).Path
+            }
             Write-Host "Instalador listo en release\\"
         }
     }
 }
+
+Write-ReleaseChecksums -Version $version -ArtifactPaths $releaseArtifacts
 
 Write-Host "Done. Check dist\\"

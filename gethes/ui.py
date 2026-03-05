@@ -438,6 +438,24 @@ class ConsoleUI:
     def get_target_fps(self) -> int:
         return self.target_fps
 
+    def get_window_size(self) -> tuple[int, int]:
+        return self.width, self.height
+
+    def is_fullscreen(self) -> bool:
+        return self.fullscreen
+
+    def get_scale_snapshot(self) -> tuple[float, float, float]:
+        return (
+            float(self.user_ui_scale),
+            float(self.responsive_scale),
+            float(self.effective_ui_scale),
+        )
+
+    def recommended_user_ui_scale(self) -> float:
+        target_effective = 1.32
+        recommended = target_effective / max(0.4, float(self.responsive_scale))
+        return max(0.7, min(2.5, recommended))
+
     def is_valid_color(self, color: str) -> bool:
         try:
             pygame.Color(color)
@@ -802,7 +820,7 @@ class ConsoleUI:
             layers = 2 if self.graphics_level == "high" else 1
             for layer_idx in range(layers):
                 parallax = 0.62 + (layer_idx * 0.48)
-                base_count = (11 if self.graphics_level == "medium" else 15) + (layer_idx * 6)
+                base_count = (13 if self.graphics_level == "medium" else 19) + (layer_idx * 7)
                 particle_count = max(2, int(round(base_count * self.particle_strength)))
                 particle_color = self._mix(self.accent_color, self.fg_color, 0.22 + (0.08 * layer_idx))
 
@@ -841,7 +859,12 @@ class ConsoleUI:
                     self.screen.blit(layer, (px - (radius * 2), py - (radius * 2)))
 
     def _draw_feedback_overlay(self) -> None:
-        energy = max(self.feedback_flash * 0.95, self.command_flash * 0.75, self.typing_glow * 0.5)
+        energy = max(
+            self.feedback_flash * 0.95,
+            self.command_flash * 0.75,
+            self.typing_glow * 0.5,
+            self.status_flash * 0.62,
+        )
         if energy <= 0.01:
             return
 
@@ -866,6 +889,33 @@ class ConsoleUI:
             header_center,
             header_radius,
         )
+
+        if self.status_flash > 0.01:
+            band_alpha = int(46 * min(1.0, self.status_flash) * self.scan_strength)
+            band_h = max(self._scale_px(4), 2)
+            band = pygame.Surface((self.width, band_h), pygame.SRCALPHA)
+            pygame.draw.rect(
+                band,
+                (glow_color.r, glow_color.g, glow_color.b, max(12, band_alpha)),
+                band.get_rect(),
+                border_radius=self._scale_px(4),
+            )
+            top_y = self._scale_px(56)
+            overlay.blit(band, (0, top_y))
+
+        if self.feedback_flash > 0.2:
+            side_alpha = int(24 * min(1.0, self.feedback_flash) * self.glow_strength)
+            side_w = max(self._scale_px(2), 1)
+            pygame.draw.rect(
+                overlay,
+                (glow_color.r, glow_color.g, glow_color.b, max(10, side_alpha)),
+                pygame.Rect(0, 0, side_w, self.height),
+            )
+            pygame.draw.rect(
+                overlay,
+                (glow_color.r, glow_color.g, glow_color.b, max(10, side_alpha)),
+                pygame.Rect(self.width - side_w, 0, side_w, self.height),
+            )
 
         self.screen.blit(overlay, (0, 0))
 

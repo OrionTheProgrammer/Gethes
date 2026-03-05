@@ -2,7 +2,25 @@ import os
 from pathlib import Path
 import time
 
-from gethes.updater import UpdateManager
+from gethes.updater import UpdateInfo, UpdateManager
+
+
+def _make_update_info(installer_name: str = "", portable_name: str = "") -> UpdateInfo:
+    return UpdateInfo(
+        repo="OrionTheProgrammer/Gethes",
+        current_version="0.3.0",
+        latest_version="0.4.0",
+        tag_name="v0.4.0",
+        release_name="v0.4.0",
+        html_url="https://example.invalid/release",
+        release_notes="",
+        installer_name=installer_name,
+        installer_url=("https://example.invalid/setup.exe" if installer_name else ""),
+        portable_name=portable_name,
+        portable_url=("https://example.invalid/portable.zip" if portable_name else ""),
+        checksum_name="",
+        checksum_url="",
+    )
 
 
 def test_normalize_repo_accepts_github_url() -> None:
@@ -203,3 +221,46 @@ def test_cleanup_update_artifacts_removes_old_files(tmp_path: Path) -> None:
     assert not stale_zip.exists()
     assert recent_zip.exists()
     assert not stale_tmp_dir.exists()
+
+
+def test_verify_asset_checksum_requires_manifest_by_default(tmp_path: Path) -> None:
+    manager = UpdateManager(current_version="0.3.0", repo="OrionTheProgrammer/Gethes")
+    asset = tmp_path / "Gethes-Setup-v0.03.exe"
+    asset.write_bytes(b"binary")
+    update_info = _make_update_info(installer_name="Gethes-Setup-v0.04.exe")
+
+    ok, status = manager.verify_asset_checksum(
+        asset_path=asset,
+        update=update_info,
+        output_dir=tmp_path,
+    )
+    assert ok is False
+    assert status == "checksum_missing_required"
+
+
+def test_verify_asset_checksum_allows_missing_manifest_when_unsafe(tmp_path: Path) -> None:
+    manager = UpdateManager(current_version="0.3.0", repo="OrionTheProgrammer/Gethes")
+    asset = tmp_path / "Gethes-v0.03-win64-portable.zip"
+    asset.write_bytes(b"binary")
+
+    update_info = _make_update_info(portable_name="Gethes-v0.04-win64-portable.zip")
+
+    ok, status = manager.verify_asset_checksum(
+        asset_path=asset,
+        update=update_info,
+        output_dir=tmp_path,
+        require_checksum=False,
+    )
+    assert ok is True
+    assert status == "checksum_missing"
+
+
+def test_find_cached_download_returns_existing_asset(tmp_path: Path) -> None:
+    manager = UpdateManager(current_version="0.3.0", repo="OrionTheProgrammer/Gethes")
+    update_info = _make_update_info(installer_name="Gethes Setup v0.04.exe")
+    expected = manager.expected_download_path(update_info, tmp_path, "installer")
+    assert expected is not None
+    expected.write_bytes(b"cached")
+
+    cached = manager.find_cached_download(update_info, tmp_path, "installer")
+    assert cached == expected

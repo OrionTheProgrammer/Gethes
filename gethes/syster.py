@@ -10,6 +10,8 @@ import unicodedata
 from typing import Callable
 from urllib import error, request
 
+from . import __version__
+
 try:
     import httpx
 except ImportError:  # pragma: no cover - optional dependency fallback
@@ -285,7 +287,7 @@ class SysterAssistant:
             "context": asdict(context),
             "memory": self._memory_payload(),
             "agent": "Syster",
-            "version": "0.03",
+            "version": __version__,
         }
         text = self._remote_reply_httpx(payload)
         if text is None:
@@ -303,7 +305,7 @@ class SysterAssistant:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/plain",
-            "User-Agent": "Gethes-Syster/0.03",
+            "User-Agent": f"Gethes-Syster/{__version__}",
         }
 
         def send_once() -> str:
@@ -361,7 +363,7 @@ class SysterAssistant:
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/plain",
-                "User-Agent": "Gethes-Syster/0.03",
+                "User-Agent": f"Gethes-Syster/{__version__}",
             },
             method="POST",
         )

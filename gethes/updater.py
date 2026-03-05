@@ -13,6 +13,8 @@ import time
 from typing import Callable
 from urllib import error, request
 
+from . import __version__
+
 
 GITHUB_API = "https://api.github.com"
 DEFAULT_TIMEOUT = 8.0
@@ -198,10 +200,13 @@ class UpdateManager:
         update: UpdateInfo,
         output_dir: Path,
         cancel_event: threading.Event | None = None,
+        require_checksum: bool = True,
     ) -> tuple[bool, str]:
         if not asset_path.exists():
             return False, "asset_not_found"
         if not update.checksum_url or not update.checksum_name:
+            if require_checksum:
+                return False, "checksum_missing_required"
             return True, "checksum_missing"
 
         checksum_file = self._download_asset(
@@ -228,6 +233,30 @@ class UpdateManager:
             return False, "checksum_mismatch"
         return True, "checksum_ok"
 
+    def expected_download_path(self, update: UpdateInfo, output_dir: Path, method: str) -> Path | None:
+        normalized = method.strip().lower()
+        if normalized == "portable":
+            file_name = update.portable_name
+        elif normalized == "installer":
+            file_name = update.installer_name
+        else:
+            return None
+
+        if not file_name.strip():
+            return None
+        clean_name = self._safe_filename(file_name)
+        if not clean_name:
+            return None
+        return output_dir / clean_name
+
+    def find_cached_download(self, update: UpdateInfo, output_dir: Path, method: str) -> Path | None:
+        candidate = self.expected_download_path(update, output_dir, method)
+        if candidate is None:
+            return None
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
+
     def _download_asset(
         self,
         url: str,
@@ -247,7 +276,7 @@ class UpdateManager:
             url,
             headers={
                 "Accept": accept,
-                "User-Agent": "Gethes-Updater/0.03",
+                "User-Agent": f"Gethes-Updater/{__version__}",
             },
             method="GET",
         )
@@ -664,7 +693,7 @@ class UpdateManager:
     ) -> tuple[dict[str, object] | list[object] | None, str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "Gethes-Updater/0.03",
+            "User-Agent": f"Gethes-Updater/{__version__}",
         }
         if etag:
             headers["If-None-Match"] = etag
