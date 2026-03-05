@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from gethes.schema_validation import validate_story_base_payload, validate_story_mod_payload
+
 
 class StoryMode:
     def __init__(
@@ -158,6 +160,13 @@ class StoryMode:
             self.secret_files = {}
             return
 
+        valid_base, _ = validate_story_base_payload(base_data)
+        if not valid_base:
+            self.pages = fallback
+            self.page_by_id = {"fallback_1": 0}
+            self.secret_files = {}
+            return
+
         data = base_data if isinstance(base_data, dict) else {}
         mod_file = self._mod_story_file()
         if mod_file is not None:
@@ -166,7 +175,9 @@ class StoryMode:
             except (OSError, json.JSONDecodeError):
                 raw_mod = None
             if isinstance(raw_mod, dict):
-                data = self._merge_story_data(data, raw_mod)
+                valid_mod, _ = validate_story_mod_payload(raw_mod)
+                if valid_mod:
+                    data = self._merge_story_data(data, raw_mod)
 
         self.story_title = str(data.get("title", "Gethes"))
         self.secret_files = self._normalize_secret_files(data.get("secrets", []))

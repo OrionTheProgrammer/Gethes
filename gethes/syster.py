@@ -10,6 +10,24 @@ import unicodedata
 from typing import Callable
 from urllib import error, request
 
+try:
+    import httpx
+except ImportError:  # pragma: no cover - optional dependency fallback
+    httpx = None
+
+try:
+    from rapidfuzz import process as rapid_process
+except ImportError:  # pragma: no cover - optional dependency fallback
+    rapid_process = None
+
+try:
+    from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+except ImportError:  # pragma: no cover - optional dependency fallback
+    Retrying = None
+    retry_if_exception_type = None
+    stop_after_attempt = None
+    wait_exponential = None
+
 
 SYSTER_MODES = {"off", "lite", "lore", "hybrid"}
 
@@ -269,6 +287,73 @@ class SysterAssistant:
             "agent": "Syster",
             "version": "0.03",
         }
+        text = self._remote_reply_httpx(payload)
+        if text is None:
+            text = self._remote_reply_urllib(payload)
+        if not text:
+            return None
+        return self._parse_remote_text(text)
+
+    def _remote_reply_httpx(self, payload: dict[str, object]) -> str | None:
+        if httpx is None:
+            return None
+        if not self.has_remote_endpoint():
+            return None
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain",
+            "User-Agent": "Gethes-Syster/0.03",
+        }
+
+        def send_once() -> str:
+            assert httpx is not None
+            timeout = httpx.Timeout(self.remote_timeout)
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(self.remote_endpoint, json=payload, headers=headers)
+                if resp.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        f"server_error_{resp.status_code}",
+                        request=resp.request,
+                        response=resp,
+                    )
+                if resp.status_code >= 400:
+                    return ""
+                return resp.text
+
+        try:
+            if (
+                Retrying is not None
+                and retry_if_exception_type is not None
+                and stop_after_attempt is not None
+                and wait_exponential is not None
+            ):
+                retryer = Retrying(
+                    reraise=True,
+                    stop=stop_after_attempt(2),
+                    wait=wait_exponential(multiplier=0.25, min=0.25, max=1.4),
+                    retry=retry_if_exception_type(
+                        (
+                            httpx.RequestError,
+                            httpx.TimeoutException,
+                            httpx.HTTPStatusError,
+                        )
+                    ),
+                )
+                for attempt in retryer:
+                    with attempt:
+                        return send_once().strip()
+                return None
+            return send_once().strip()
+        except (
+            httpx.RequestError,
+            httpx.TimeoutException,
+            httpx.HTTPStatusError,
+            ValueError,
+        ):
+            return None
+
+    def _remote_reply_urllib(self, payload: dict[str, object]) -> str | None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
             self.remote_endpoint,
@@ -289,11 +374,12 @@ class SysterAssistant:
 
         if not raw:
             return None
+        return raw.decode("utf-8", errors="replace").strip()
 
-        text = raw.decode("utf-8", errors="replace").strip()
+    @staticmethod
+    def _parse_remote_text(text: str) -> str | None:
         if not text:
             return None
-
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -338,15 +424,35 @@ class SysterAssistant:
 
         known = {w for items in INTENT_KEYWORDS.values() for w in items}
         for token in words:
-            match = get_close_matches(token, known, n=1, cutoff=0.86)
-            if not match:
+            near = self._closest_keyword(token, known)
+            if not near:
                 continue
-            near = match[0]
             for intent, intents_words in INTENT_KEYWORDS.items():
                 if near in intents_words:
                     return intent
 
         return "unknown"
+
+    @staticmethod
+    def _closest_keyword(token: str, known_words: set[str]) -> str:
+        token_norm = token.strip()
+        if not token_norm:
+            return ""
+
+        if rapid_process is not None:
+            hit = rapid_process.extractOne(
+                token_norm,
+                list(known_words),
+                score_cutoff=86,
+            )
+            if hit is not None:
+                return str(hit[0])
+            return ""
+
+        match = get_close_matches(token_norm, known_words, n=1, cutoff=0.86)
+        if match:
+            return match[0]
+        return ""
 
     def _suggest_command(self, intent: str, context: SysterContext) -> str:
         suggested = INTENT_TO_COMMAND.get(intent, "help")

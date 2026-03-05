@@ -20,3 +20,9 @@ def test_syster_followup_after_audio_intent() -> None:
     ctx = SysterContext(last_command="menu")
     syster.reply("audio", _tr, ctx)
     assert syster.reply("y eso?", _tr, ctx) == "app.syster.reply.followup"
+
+
+def test_syster_fuzzy_typo_detects_update_intent() -> None:
+    syster = SysterAssistant(mode="lite")
+    ctx = SysterContext()
+    assert syster.reply("actulizar", _tr, ctx) == "app.syster.reply.update"

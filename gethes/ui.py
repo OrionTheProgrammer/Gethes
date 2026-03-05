@@ -78,6 +78,9 @@ class ConsoleUI:
         self.panel_color = pygame.Color("#0D131B")
         self.dim_color = pygame.Color("#6B8495")
         self.accent_color = pygame.Color("#6CB7E8")
+        self.scan_strength = 1.0
+        self.glow_strength = 1.0
+        self.particle_strength = 1.0
 
         self.font_family = "consolas"
         self.base_font_size = 22
@@ -359,6 +362,12 @@ class ConsoleUI:
         font_family: str,
         font_size: int,
         ui_scale: float | None = None,
+        accent_color: str | None = None,
+        panel_color: str | None = None,
+        dim_color: str | None = None,
+        scan_strength: float = 1.0,
+        glow_strength: float = 1.0,
+        particle_strength: float = 1.0,
     ) -> None:
         try:
             self.bg_color = pygame.Color(bg_color)
@@ -376,9 +385,33 @@ class ConsoleUI:
 
         self._refresh_scale(reload_fonts=True)
 
-        self.accent_color = self._derive_accent(self.fg_color)
-        self.panel_color = self._mix(self.bg_color, self.accent_color, 0.13)
-        self.dim_color = self._mix(self.fg_color, self.bg_color, 0.45)
+        if accent_color:
+            try:
+                self.accent_color = pygame.Color(accent_color)
+            except ValueError:
+                self.accent_color = self._derive_accent(self.fg_color)
+        else:
+            self.accent_color = self._derive_accent(self.fg_color)
+
+        if panel_color:
+            try:
+                self.panel_color = pygame.Color(panel_color)
+            except ValueError:
+                self.panel_color = self._mix(self.bg_color, self.accent_color, 0.13)
+        else:
+            self.panel_color = self._mix(self.bg_color, self.accent_color, 0.13)
+
+        if dim_color:
+            try:
+                self.dim_color = pygame.Color(dim_color)
+            except ValueError:
+                self.dim_color = self._mix(self.fg_color, self.bg_color, 0.45)
+        else:
+            self.dim_color = self._mix(self.fg_color, self.bg_color, 0.45)
+
+        self.scan_strength = max(0.2, min(2.0, float(scan_strength)))
+        self.glow_strength = max(0.2, min(2.0, float(glow_strength)))
+        self.particle_strength = max(0.2, min(2.0, float(particle_strength)))
         self._invalidate_background_cache()
 
     def set_ui_scale(self, value: float) -> None:
@@ -616,7 +649,12 @@ class ConsoleUI:
             self.bg_color.normalize(),
             self.fg_color.normalize(),
             self.accent_color.normalize(),
+            self.panel_color.normalize(),
+            self.dim_color.normalize(),
             self.graphics_level,
+            round(self.scan_strength, 3),
+            round(self.glow_strength, 3),
+            round(self.particle_strength, 3),
             int(round(self.effective_ui_scale * 100)),
         )
         if self._bg_cache_surface is not None and self._bg_cache_key == key:
@@ -624,7 +662,7 @@ class ConsoleUI:
 
         surface = pygame.Surface((self.width, self.height))
         base = self.bg_color
-        top = self._mix(base, self.accent_color, 0.06)
+        top = self._mix(base, self.accent_color, min(0.16, 0.05 + (0.03 * self.glow_strength)))
         line_step = 2 if self.graphics_level == "low" else 1
         for y in range(0, self.height, line_step):
             t = y / max(1, self.height - 1)
@@ -632,13 +670,18 @@ class ConsoleUI:
             color = self._mix(base, top, blend)
             pygame.draw.line(surface, color, (0, y), (self.width, y), width=line_step)
 
-        scan = self._mix(self.bg_color, self.fg_color, 0.04)
+        scan = self._mix(
+            self.bg_color,
+            self.fg_color,
+            min(0.18, 0.02 + (0.035 * self.scan_strength)),
+        )
         if self.graphics_level == "low":
             step = max(6, self._scale_px(8))
         elif self.graphics_level == "high":
             step = max(2, self._scale_px(3))
         else:
             step = max(3, self._scale_px(4))
+        step = max(1, int(step / max(0.6, self.scan_strength)))
         for y in range(0, self.height, step):
             pygame.draw.line(surface, scan, (0, y), (self.width, y))
 
@@ -741,7 +784,11 @@ class ConsoleUI:
         if self._bg_cache_surface is not None:
             self.screen.blit(self._bg_cache_surface, (0, 0))
 
-        glow = self._mix(self.accent_color, self.bg_color, 0.58)
+        glow = self._mix(
+            self.accent_color,
+            self.bg_color,
+            max(0.32, min(0.75, 0.58 - ((self.glow_strength - 1.0) * 0.15))),
+        )
         y1 = int((0.5 + 0.5 * math.sin(self.animation_phase * 0.7)) * max(1, self.height - 1))
         pygame.draw.line(self.screen, glow, (0, y1), (self.width, y1), 1)
         if self.graphics_level in {"medium", "high"}:
@@ -755,7 +802,8 @@ class ConsoleUI:
             layers = 2 if self.graphics_level == "high" else 1
             for layer_idx in range(layers):
                 parallax = 0.62 + (layer_idx * 0.48)
-                particle_count = (11 if self.graphics_level == "medium" else 15) + (layer_idx * 6)
+                base_count = (11 if self.graphics_level == "medium" else 15) + (layer_idx * 6)
+                particle_count = max(2, int(round(base_count * self.particle_strength)))
                 particle_color = self._mix(self.accent_color, self.fg_color, 0.22 + (0.08 * layer_idx))
 
                 for idx in range(particle_count):
@@ -769,7 +817,7 @@ class ConsoleUI:
 
                     twinkle = 0.35 + (0.65 * (0.5 + 0.5 * math.sin((self.animation_phase * 1.7) + (seed * 0.81))))
                     radius = 1 + (1 if (self.graphics_level == "high" and (seed % 9 == 0)) else 0)
-                    alpha = int((20 + (30 * parallax)) * twinkle)
+                    alpha = int((20 + (30 * parallax)) * twinkle * self.glow_strength)
 
                     if self.graphics_level == "high" and (seed % 4 == 0):
                         tail = int((7 + (seed % 5)) * parallax)
@@ -799,7 +847,7 @@ class ConsoleUI:
 
         overlay = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         glow_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.28)
-        alpha = int(58 * min(1.0, energy))
+        alpha = int(58 * min(1.0, energy) * self.glow_strength)
 
         input_center = (self.width // 2, int(self.height * 0.84))
         input_radius = max(self._scale_px(120), int(self.width * 0.19))
@@ -834,7 +882,7 @@ class ConsoleUI:
         pygame.draw.rect(self.screen, self.accent_color, rect, width=1, border_radius=radius)
         if self.feedback_flash > 0.0:
             edge_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.2)
-            glow_alpha = int(34 * min(1.0, self.feedback_flash))
+            glow_alpha = int(34 * min(1.0, self.feedback_flash) * self.glow_strength)
             if glow_alpha > 0:
                 glow_layer = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
                 pygame.draw.rect(
@@ -918,7 +966,7 @@ class ConsoleUI:
             sweep_ratio = 0.5 + (0.5 * math.sin((self.animation_phase * 0.8) + 1.4))
             sweep_y = rect.y + int(sweep_ratio * max(1, rect.height - 1))
             sweep_color = self._mix(self.accent_color, self.bg_color, 0.62)
-            sweep_alpha = int(38 + (42 * self.feedback_flash))
+            sweep_alpha = int((38 + (42 * self.feedback_flash)) * self.scan_strength)
             sweep_layer = pygame.Surface((rect.width - self._scale_px(10), self._scale_px(2)), pygame.SRCALPHA)
             pygame.draw.rect(
                 sweep_layer,
@@ -959,7 +1007,7 @@ class ConsoleUI:
         glow_ratio = max(self.typing_glow, self.command_flash * 0.5)
         if glow_ratio > 0.0:
             glow_color = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.32)
-            glow_alpha = int(120 * min(1.0, glow_ratio))
+            glow_alpha = int(120 * min(1.0, glow_ratio) * self.glow_strength)
             glow_surface = pygame.Surface((rect.width - self._scale_px(16), self._scale_px(4)), pygame.SRCALPHA)
             pygame.draw.rect(
                 glow_surface,
@@ -972,7 +1020,7 @@ class ConsoleUI:
                 (rect.x + self._scale_px(8), rect.bottom - self._scale_px(8)),
             )
 
-        if self.graphics_level != "low":
+        if self.graphics_level != "low" and self.scan_strength > 0.25:
             line_w = rect.width - self._scale_px(16)
             base_y = rect.bottom - self._scale_px(10)
             scan_mix = 0.12 + (0.2 * (0.5 + 0.5 * math.sin(self.animation_phase * 4.1)))
@@ -1001,7 +1049,7 @@ class ConsoleUI:
                 phase = (self.animation_phase * 4.8) + (idx * 0.42)
                 glow = 0.25 + (0.75 * (0.5 + 0.5 * math.sin(phase)))
                 radius = 1 + int(glow > 0.72)
-                dot_alpha = int(70 + (110 * glow * max(0.25, ratio)))
+                dot_alpha = int((70 + (110 * glow * max(0.25, ratio))) * self.glow_strength)
                 dot_color = self._mix(self.accent_color, self.fg_color, 0.3 + (0.25 * glow))
                 layer = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
                 pygame.draw.circle(
@@ -1033,11 +1081,15 @@ class ConsoleUI:
 
     def _draw_intro(self) -> None:
         base = pygame.Color("#030508")
-        glow = self._mix(self.accent_color, pygame.Color("#FFFFFF"), 0.28)
+        glow = self._mix(
+            self.accent_color,
+            pygame.Color("#FFFFFF"),
+            min(0.5, 0.22 + (0.08 * self.glow_strength)),
+        )
 
         self.screen.fill(base)
 
-        top = self._mix(base, self.accent_color, 0.1)
+        top = self._mix(base, self.accent_color, min(0.2, 0.08 + (0.06 * self.scan_strength)))
         line_step = 2 if self.graphics_level == "low" else 1
         for y in range(0, self.height, line_step):
             t = y / max(1, self.height - 1)
@@ -1060,7 +1112,8 @@ class ConsoleUI:
         alpha_ratio = min(fade_in, fade)
 
         halo_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        halo_rings = {"low": 5, "medium": 8, "high": 11}.get(self.graphics_level, 8)
+        base_rings = {"low": 5, "medium": 8, "high": 11}.get(self.graphics_level, 8)
+        halo_rings = max(3, int(round(base_rings * (0.65 + (0.35 * self.glow_strength)))))
         for idx in range(halo_rings):
             radius = int(self._scale_px(62) + (idx * self._scale_px(23)))
             a = int((18 - idx * 2) * alpha_ratio)

@@ -14,6 +14,12 @@ SYSTER_MODES = {"off", "lite", "lore", "hybrid"}
 class GameConfig:
     bg_color: str = "#07090D"
     fg_color: str = "#C7D5DF"
+    theme_accent_color: str = ""
+    theme_panel_color: str = ""
+    theme_dim_color: str = ""
+    theme_scan_strength: float = 1.0
+    theme_glow_strength: float = 1.0
+    theme_particles_strength: float = 1.0
     font_family: str = "Consolas"
     font_size: int = 13
     sound: bool = True
@@ -47,6 +53,21 @@ class ConfigStore:
             cfg.bg_color = payload["bg_color"]
         if isinstance(payload.get("fg_color"), str):
             cfg.fg_color = payload["fg_color"]
+        if isinstance(payload.get("theme_accent_color"), str):
+            cfg.theme_accent_color = payload["theme_accent_color"]
+        if isinstance(payload.get("theme_panel_color"), str):
+            cfg.theme_panel_color = payload["theme_panel_color"]
+        if isinstance(payload.get("theme_dim_color"), str):
+            cfg.theme_dim_color = payload["theme_dim_color"]
+        theme_scan_strength = payload.get("theme_scan_strength")
+        if isinstance(theme_scan_strength, (int, float)) and 0.2 <= float(theme_scan_strength) <= 2.0:
+            cfg.theme_scan_strength = float(theme_scan_strength)
+        theme_glow_strength = payload.get("theme_glow_strength")
+        if isinstance(theme_glow_strength, (int, float)) and 0.2 <= float(theme_glow_strength) <= 2.0:
+            cfg.theme_glow_strength = float(theme_glow_strength)
+        theme_particles_strength = payload.get("theme_particles_strength")
+        if isinstance(theme_particles_strength, (int, float)) and 0.2 <= float(theme_particles_strength) <= 2.0:
+            cfg.theme_particles_strength = float(theme_particles_strength)
         if isinstance(payload.get("font_family"), str):
             cfg.font_family = payload["font_family"]
 

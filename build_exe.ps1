@@ -141,6 +141,10 @@ $args = @(
     "--hidden-import", "pygame_menu",
     "--hidden-import", "pymunk",
     "--hidden-import", "pytweening",
+    "--hidden-import", "rapidfuzz",
+    "--hidden-import", "httpx",
+    "--hidden-import", "tenacity",
+    "--hidden-import", "platformdirs",
     "--add-data", "gethes/data;gethes/data",
     "--add-data", "gethes/assets;gethes/assets",
     "main.py"

@@ -227,3 +227,25 @@ def test_story_runtime_handles_choices_and_secret_open(tmp_path: Path) -> None:
 
     story._handle_input("open memo_alpha")
     assert "memo_alpha" in app.secret_viewed
+
+
+def test_story_invalid_mod_schema_is_ignored(tmp_path: Path) -> None:
+    base_dir = tmp_path / "base"
+    mod_dir = tmp_path / "mods"
+    base_dir.mkdir()
+    mod_dir.mkdir()
+
+    base = {
+        "title": "Base",
+        "chapters": [{"title": "A", "pages": ["p1"]}],
+    }
+    mod = {
+        "mode": "append",
+        "chapters": "bad-value",
+    }
+    _write_story(base_dir / "story_es.json", base)
+    _write_story(mod_dir / "story.json", mod)
+
+    story = StoryMode(_DummyApp(), base_dir, mod_story_dir=mod_dir)
+    assert story.story_title == "Base"
+    assert len(story.pages) == 1

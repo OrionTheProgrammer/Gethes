@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from difflib import get_close_matches
 import json
 import os
 import queue
@@ -24,24 +26,144 @@ from gethes.freesound_sfx import FreesoundSFXService
 from gethes.games.codebreaker import CodeBreakerGame
 from gethes.games.hangman import HangmanGame
 from gethes.games.physics_lab import PhysicsLabGame
+from gethes.games.roguelike import RoguelikeGame
 from gethes.games.snake import SnakeGame
 from gethes.games.tictactoe import TicTacToeGame
 from gethes.i18n import I18n
 from gethes.mod_watcher import ModWatcher
 from gethes.runtime_paths import resource_package_dir, user_data_dir
+from gethes.schema_validation import validate_theme_payload
 from gethes.save_system import SaveManager
 from gethes.story.story_mode import StoryMode
 from gethes.syster import SysterAssistant, SysterContext
 from gethes.updater import UpdateInfo, UpdateManager
 from gethes.ui import ConsoleUI
 
+try:
+    from rapidfuzz import process as rapid_process
+except ImportError:  # pragma: no cover - optional dependency fallback
+    rapid_process = None
 
-BUILTIN_THEME_PRESETS: dict[str, tuple[str, str]] = {
-    "obsidian": ("#07090D", "#C7D5DF"),
-    "void": ("#040507", "#8DA8BA"),
-    "deepsea": ("#050B12", "#91D8FF"),
-    "matrix": ("#050A07", "#7AF57C"),
-    "amber": ("#0D0905", "#FFCF84"),
+
+@dataclass(frozen=True)
+class ThemePreset:
+    bg: str
+    fg: str
+    accent: str = ""
+    panel: str = ""
+    dim: str = ""
+    scan_strength: float = 1.0
+    glow_strength: float = 1.0
+    particle_strength: float = 1.0
+    unlock_achievement: str = ""
+
+
+BUILTIN_THEME_PRESETS: dict[str, ThemePreset] = {
+    "obsidian": ThemePreset(
+        bg="#07090D",
+        fg="#C7D5DF",
+        accent="#6CB7E8",
+        panel="#0D131B",
+        dim="#6B8495",
+        scan_strength=1.0,
+        glow_strength=1.0,
+        particle_strength=1.0,
+    ),
+    "void": ThemePreset(
+        bg="#040507",
+        fg="#8DA8BA",
+        accent="#4F90B7",
+        panel="#0A1018",
+        dim="#5A6F83",
+        scan_strength=0.86,
+        glow_strength=0.8,
+        particle_strength=0.72,
+    ),
+    "deepsea": ThemePreset(
+        bg="#050B12",
+        fg="#91D8FF",
+        accent="#39C4FF",
+        panel="#0A1724",
+        dim="#6E9FBC",
+        scan_strength=1.1,
+        glow_strength=1.12,
+        particle_strength=0.95,
+    ),
+    "matrix": ThemePreset(
+        bg="#050A07",
+        fg="#7AF57C",
+        accent="#3DEB65",
+        panel="#09130D",
+        dim="#5BA56A",
+        scan_strength=1.22,
+        glow_strength=1.02,
+        particle_strength=1.1,
+    ),
+    "amber": ThemePreset(
+        bg="#0D0905",
+        fg="#FFCF84",
+        accent="#EAA24F",
+        panel="#1A1208",
+        dim="#B2874D",
+        scan_strength=0.95,
+        glow_strength=0.92,
+        particle_strength=0.74,
+    ),
+    "crimson_archive": ThemePreset(
+        bg="#10070A",
+        fg="#F0B7C1",
+        accent="#FF5A7A",
+        panel="#1A0B11",
+        dim="#A87984",
+        scan_strength=1.16,
+        glow_strength=1.18,
+        particle_strength=0.88,
+        unlock_achievement="hangman_win",
+    ),
+    "neon_grid": ThemePreset(
+        bg="#06040F",
+        fg="#CCBEFF",
+        accent="#8F63FF",
+        panel="#110B1F",
+        dim="#8E7DBE",
+        scan_strength=1.3,
+        glow_strength=1.25,
+        particle_strength=1.22,
+        unlock_achievement="snake_score_120",
+    ),
+    "protocol_ice": ThemePreset(
+        bg="#050A10",
+        fg="#CDEBFF",
+        accent="#6FD8FF",
+        panel="#0A151F",
+        dim="#82A4BC",
+        scan_strength=0.84,
+        glow_strength=1.08,
+        particle_strength=0.7,
+        unlock_achievement="codebreaker_win",
+    ),
+    "companion_dusk": ThemePreset(
+        bg="#080A12",
+        fg="#D6DAF1",
+        accent="#8DA1DF",
+        panel="#101425",
+        dim="#8B96BC",
+        scan_strength=0.74,
+        glow_strength=0.9,
+        particle_strength=0.62,
+        unlock_achievement="story_companion_route",
+    ),
+    "ghost_echo": ThemePreset(
+        bg="#04070B",
+        fg="#BFE7F0",
+        accent="#4BE1D2",
+        panel="#09131A",
+        dim="#7395A1",
+        scan_strength=1.36,
+        glow_strength=1.32,
+        particle_strength=1.28,
+        unlock_achievement="secret_echo",
+    ),
 }
 DEFAULT_UPDATE_REPO = "OrionTheProgrammer/Gethes"
 SYSTER_ENABLED = False
@@ -79,9 +201,13 @@ class GethesApp:
         self.update_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
         self.mod_watcher: ModWatcher | None = None
         self.mod_reload_times: dict[str, float] = {"theme": 0.0, "story": 0.0}
+        self.theme_mod_errors: list[str] = []
         self.update_check_running = False
         self.update_install_running = False
         self.update_install_after_check = False
+        self.update_cancel_event: threading.Event | None = None
+        self.update_downloaded_bytes = 0
+        self.update_download_total_bytes = 0
         self.auto_update_check_done = False
         self.pending_update: UpdateInfo | None = None
         self.update_last_status = "idle"
@@ -94,8 +220,10 @@ class GethesApp:
         self.update_manager = UpdateManager(
             current_version=__version__,
             repo=update_repo,
+            cache_dir=self.update_download_dir / "cache",
         )
         self.config.update_repo = self.update_manager.repo
+        self.update_manager.cleanup_update_artifacts(self.update_download_dir)
 
         self.save_manager = SaveManager(self.storage_dir / "saves", slots=3)
         self.current_slot = self.save_manager.load_slot(self._clamp_slot(self.config.active_slot))
@@ -138,6 +266,7 @@ class GethesApp:
         self.syster_commands_since_auto = 0
 
         self._migrate_legacy_theme()
+        self._sync_theme_visual_profile()
         self._refresh_ui_language()
         self._apply_visual_config()
 
@@ -148,6 +277,7 @@ class GethesApp:
         self.tictactoe = TicTacToeGame(self)
         self.codebreaker = CodeBreakerGame(self)
         self.physics_lab = PhysicsLabGame(self)
+        self.roguelike = RoguelikeGame(self)
 
     def tr(self, key: str, **kwargs: object) -> str:
         return self.i18n.t(key, **kwargs)
@@ -169,6 +299,8 @@ class GethesApp:
             self.snake.update(dt)
         if self.physics_lab.active:
             self.physics_lab.update(dt)
+        if self.roguelike.active:
+            self.roguelike.update(dt)
         if self.syster_enabled:
             self._update_syster_autochat()
 
@@ -334,13 +466,64 @@ class GethesApp:
         self.set_stat_max("physics_best_score", score)
         self._save_current_slot(user_feedback=False)
 
+    def on_roguelike_finished(
+        self,
+        won: bool,
+        cancelled: bool,
+        depth: int,
+        kills: int,
+        gold: int,
+    ) -> None:
+        if cancelled:
+            return
+        self.bump_stat("rogue_runs", 1)
+        if won:
+            self.bump_stat("rogue_wins", 1)
+        self.set_stat_max("rogue_best_depth", depth)
+        self.set_stat_max("rogue_best_gold", gold)
+        self.set_stat_max("rogue_best_kills", kills)
+        self._save_current_slot(user_feedback=False)
+
     def _migrate_legacy_theme(self) -> None:
         legacy_bg = self.config.bg_color.strip().lower()
         legacy_fg = self.config.fg_color.strip().lower()
         if legacy_bg == "#101820" and legacy_fg == "#e8f1f2":
-            bg, fg = self.theme_presets.get("obsidian", BUILTIN_THEME_PRESETS["obsidian"])
-            self.config.bg_color = bg
-            self.config.fg_color = fg
+            theme = self.theme_presets.get("obsidian", BUILTIN_THEME_PRESETS["obsidian"])
+            self.config.bg_color = theme.bg
+            self.config.fg_color = theme.fg
+            self.config.theme_accent_color = theme.accent
+            self.config.theme_panel_color = theme.panel
+            self.config.theme_dim_color = theme.dim
+            self.config.theme_scan_strength = theme.scan_strength
+            self.config.theme_glow_strength = theme.glow_strength
+            self.config.theme_particles_strength = theme.particle_strength
+
+    def _sync_theme_visual_profile(self) -> None:
+        if self.config.theme_accent_color.strip():
+            return
+        if self.config.theme_panel_color.strip():
+            return
+        if self.config.theme_dim_color.strip():
+            return
+        if (
+            abs(float(self.config.theme_scan_strength) - 1.0) > 0.001
+            or abs(float(self.config.theme_glow_strength) - 1.0) > 0.001
+            or abs(float(self.config.theme_particles_strength) - 1.0) > 0.001
+        ):
+            return
+
+        for preset in self.theme_presets.values():
+            if (
+                preset.bg.lower() == self.config.bg_color.lower()
+                and preset.fg.lower() == self.config.fg_color.lower()
+            ):
+                self.config.theme_accent_color = preset.accent
+                self.config.theme_panel_color = preset.panel
+                self.config.theme_dim_color = preset.dim
+                self.config.theme_scan_strength = preset.scan_strength
+                self.config.theme_glow_strength = preset.glow_strength
+                self.config.theme_particles_strength = preset.particle_strength
+                return
 
     def _load_words(self) -> list[str]:
         words_file = self.data_dir / "words.txt"
@@ -383,9 +566,10 @@ class GethesApp:
                             "",
                             "Theme mod format (single):",
                             '  {"name":"nocturne","bg":"#05070B","fg":"#C3CEDA"}',
+                            "  Optional: accent/panel/dim + fx scan/glow/particles + unlock_achievement",
                             "",
                             "Theme mod format (pack):",
-                            '  {"themes":{"nocturne":{"bg":"#05070B","fg":"#C3CEDA"}}}',
+                            '  {"themes":{"nocturne":{"bg":"#05070B","fg":"#C3CEDA","accent":"#6CB7E8","fx":{"scan":1.1,"glow":0.9,"particles":0.8},"unlock_achievement":"codebreaker_win"}}}',
                         ]
                     ),
                     encoding="utf-8",
@@ -400,9 +584,25 @@ class GethesApp:
                     json.dumps(
                         {
                             "themes": {
-                                "nocturne": {"bg": "#05070B", "fg": "#C3CEDA"},
-                                "bloodmoon": {"bg": "#10060A", "fg": "#F0B7C1"},
-                                "mono_ice": {"bg": "#070B0D", "fg": "#D2E1E8"},
+                                "nocturne": {
+                                    "bg": "#05070B",
+                                    "fg": "#C3CEDA",
+                                    "accent": "#7AA8D9",
+                                    "fx": {"scan": 1.0, "glow": 0.9, "particles": 0.8},
+                                },
+                                "bloodmoon": {
+                                    "bg": "#10060A",
+                                    "fg": "#F0B7C1",
+                                    "accent": "#FF5A7A",
+                                    "fx": {"scan": 1.2, "glow": 1.2, "particles": 0.9},
+                                    "unlock_achievement": "hangman_win",
+                                },
+                                "mono_ice": {
+                                    "bg": "#070B0D",
+                                    "fg": "#D2E1E8",
+                                    "accent": "#7AD0F2",
+                                    "fx": {"scan": 0.85, "glow": 1.0, "particles": 0.7},
+                                },
                             }
                         },
                         indent=2,
@@ -439,57 +639,117 @@ class GethesApp:
             except OSError:
                 pass
 
-    def _load_theme_presets(self) -> dict[str, tuple[str, str]]:
+    @staticmethod
+    def _clamp_theme_strength(value: object, default: float = 1.0) -> float:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return max(0.2, min(2.0, float(value)))
+        return default
+
+    def _parse_theme_preset(self, payload: object) -> ThemePreset | None:
+        if not isinstance(payload, dict):
+            return None
+
+        bg = payload.get("bg")
+        fg = payload.get("fg")
+        if not isinstance(bg, str) or not isinstance(fg, str):
+            return None
+
+        fx: dict[str, object] = {}
+        raw_fx = payload.get("fx")
+        if isinstance(raw_fx, dict):
+            fx = raw_fx
+
+        accent = payload.get("accent")
+        panel = payload.get("panel")
+        dim = payload.get("dim")
+        unlock = payload.get("unlock_achievement")
+        if not isinstance(unlock, str):
+            unlock = ""
+
+        return ThemePreset(
+            bg=bg.strip(),
+            fg=fg.strip(),
+            accent=(accent.strip() if isinstance(accent, str) else ""),
+            panel=(panel.strip() if isinstance(panel, str) else ""),
+            dim=(dim.strip() if isinstance(dim, str) else ""),
+            scan_strength=self._clamp_theme_strength(
+                fx.get("scan", payload.get("scan_strength", payload.get("scan", 1.0))),
+                default=1.0,
+            ),
+            glow_strength=self._clamp_theme_strength(
+                fx.get("glow", payload.get("glow_strength", payload.get("glow", 1.0))),
+                default=1.0,
+            ),
+            particle_strength=self._clamp_theme_strength(
+                fx.get(
+                    "particles",
+                    payload.get("particle_strength", payload.get("particles", 1.0)),
+                ),
+                default=1.0,
+            ),
+            unlock_achievement=unlock.strip().lower(),
+        )
+
+    def _load_theme_presets(self) -> dict[str, ThemePreset]:
         presets = dict(BUILTIN_THEME_PRESETS)
+        self.theme_mod_errors = []
         for mod_file in sorted(self.theme_mods_dir.glob("*.json")):
             try:
                 payload = json.loads(mod_file.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                self.theme_mod_errors.append(f"{mod_file.name}: invalid_json")
                 continue
 
-            for name, bg, fg in self._collect_theme_entries(payload):
+            valid, error_msg = validate_theme_payload(payload)
+            if not valid:
+                self.theme_mod_errors.append(f"{mod_file.name}: {error_msg}")
+                continue
+
+            for name, theme in self._collect_theme_entries(payload):
                 normalized = name.strip().lower().replace(" ", "_")
                 if not normalized:
                     continue
-                if not self.ui.is_valid_color(bg) or not self.ui.is_valid_color(fg):
+                if not self.ui.is_valid_color(theme.bg) or not self.ui.is_valid_color(theme.fg):
                     continue
-                presets[normalized] = (bg, fg)
+                if theme.accent and not self.ui.is_valid_color(theme.accent):
+                    continue
+                if theme.panel and not self.ui.is_valid_color(theme.panel):
+                    continue
+                if theme.dim and not self.ui.is_valid_color(theme.dim):
+                    continue
+                presets[normalized] = theme
 
         return presets
 
-    def _collect_theme_entries(self, payload: object) -> list[tuple[str, str, str]]:
-        entries: list[tuple[str, str, str]] = []
+    def _collect_theme_entries(self, payload: object) -> list[tuple[str, ThemePreset]]:
+        entries: list[tuple[str, ThemePreset]] = []
         if not isinstance(payload, dict):
             return entries
 
-        if all(isinstance(payload.get(k), str) for k in ("name", "bg", "fg")):
-            entries.append(
-                (
-                    str(payload["name"]),
-                    str(payload["bg"]),
-                    str(payload["fg"]),
-                )
-            )
+        name = payload.get("name")
+        base_theme = self._parse_theme_preset(payload)
+        if isinstance(name, str) and base_theme is not None:
+            entries.append((name, base_theme))
 
         theme_pack = payload.get("themes")
         if isinstance(theme_pack, dict):
             for name, item in theme_pack.items():
                 if not isinstance(name, str) or not isinstance(item, dict):
                     continue
-                bg = item.get("bg")
-                fg = item.get("fg")
-                if isinstance(bg, str) and isinstance(fg, str):
-                    entries.append((name, bg, fg))
+                parsed = self._parse_theme_preset(item)
+                if parsed is not None:
+                    entries.append((name, parsed))
 
         for name, item in payload.items():
             if name == "themes":
                 continue
             if not isinstance(name, str) or not isinstance(item, dict):
                 continue
-            bg = item.get("bg")
-            fg = item.get("fg")
-            if isinstance(bg, str) and isinstance(fg, str):
-                entries.append((name, bg, fg))
+            parsed = self._parse_theme_preset(item)
+            if parsed is not None:
+                entries.append((name, parsed))
 
         return entries
 
@@ -566,6 +826,7 @@ class GethesApp:
             or self.boot_active
             or self.snake.active
             or self.physics_lab.active
+            or self.roguelike.active
             or self.input_handler is not None
         ):
             return
@@ -643,6 +904,10 @@ class GethesApp:
 
         if cmd in {"physics", "lab", "physicslab"}:
             self.physics_lab.start()
+            return
+
+        if cmd in {"roguelike", "rogelike", "rogue", "dungeon"}:
+            self.roguelike.start()
             return
 
         if cmd in {"opciones", "options", "opcoes"}:
@@ -739,7 +1004,110 @@ class GethesApp:
             self.ui.request_quit()
             return
 
-        self.ui.write(self.tr("app.unknown", cmd=cmd))
+        suggestion = self._suggest_command_alias(cmd)
+        if suggestion:
+            self.ui.write(self.tr("app.unknown_suggest", cmd=cmd, suggestion=suggestion))
+        else:
+            self.ui.write(self.tr("app.unknown", cmd=cmd))
+
+    @staticmethod
+    def _known_command_aliases() -> set[str]:
+        return {
+            "help",
+            "ayuda",
+            "ajuda",
+            "?",
+            "clear",
+            "cls",
+            "menu",
+            "inicio",
+            "home",
+            "vmenu",
+            "menuui",
+            "visualmenu",
+            "snake",
+            "ahorcado1",
+            "hangman1",
+            "ahorcado2",
+            "hangman2",
+            "historia",
+            "story",
+            "gato",
+            "tictactoe",
+            "ttt",
+            "codigo",
+            "codebreaker",
+            "mastermind",
+            "physics",
+            "lab",
+            "physicslab",
+            "roguelike",
+            "rogelike",
+            "rogue",
+            "dungeon",
+            "opciones",
+            "options",
+            "opcoes",
+            "modsreload",
+            "mods",
+            "logros",
+            "achievements",
+            "ach",
+            "slots",
+            "slot",
+            "slotname",
+            "savegame",
+            "syster",
+            "creator",
+            "orion",
+            "gethes",
+            "sound",
+            "graphics",
+            "uiscale",
+            "ui-scale",
+            "scaleui",
+            "theme",
+            "bg",
+            "fg",
+            "font",
+            "fonts",
+            "lang",
+            "language",
+            "idioma",
+            "lingua",
+            "update",
+            "actualizar",
+            "atualizar",
+            "sfx",
+            "save",
+            "exit",
+            "salir",
+            "sair",
+            "quit",
+        }
+
+    def _suggest_command_alias(self, cmd: str) -> str:
+        token = cmd.strip().lower()
+        if not token:
+            return ""
+
+        aliases = sorted(self._known_command_aliases())
+        if token in aliases:
+            return ""
+
+        if rapid_process is not None:
+            hit = rapid_process.extractOne(
+                token,
+                aliases,
+                score_cutoff=74,
+            )
+            if hit is not None:
+                return str(hit[0])
+
+        fallback = get_close_matches(token, aliases, n=1, cutoff=0.74)
+        if fallback:
+            return fallback[0]
+        return ""
 
     def _queue_syster_auto_from_command(self, cmd: str) -> None:
         if not self.syster_enabled:
@@ -769,7 +1137,20 @@ class GethesApp:
             return "help"
 
         cmd = self.last_command
-        if cmd in {"snake", "ahorcado1", "ahorcado2", "gato", "tictactoe", "codigo", "codebreaker", "physics"}:
+        if cmd in {
+            "snake",
+            "ahorcado1",
+            "ahorcado2",
+            "gato",
+            "tictactoe",
+            "codigo",
+            "codebreaker",
+            "physics",
+            "roguelike",
+            "rogelike",
+            "rogue",
+            "dungeon",
+        }:
             return "games"
         if cmd in {"options", "opciones", "theme", "graphics", "sound", "lang", "uiscale"}:
             return "settings"
@@ -791,6 +1172,7 @@ class GethesApp:
             or self.boot_active
             or self.snake.active
             or self.physics_lab.active
+            or self.roguelike.active
             or self.input_handler is not None
         ):
             return False
@@ -1230,6 +1612,7 @@ class GethesApp:
             icon_key="mdi:trophy-outline",
         )
         self.audio.play("achievement")
+        self._notify_theme_unlocks(achievement_id)
         self._save_current_slot(user_feedback=False)
 
     def _show_slots(self) -> None:
@@ -1368,6 +1751,68 @@ class GethesApp:
         self._save_config()
         self.ui.write(self.tr("app.ui_scale_updated", value=f"{value:.2f}x"))
 
+    def _theme_unlock_title(self, achievement_id: str) -> str:
+        token = achievement_id.strip().lower()
+        if not token:
+            return "-"
+        item = BY_ID.get(token)
+        if item is None:
+            return token
+        if item.hidden and not self.current_slot.flags.get(f"achv_{token}", False):
+            return self.tr("achievement.hidden.title")
+        return self.tr(item.title_key)
+
+    def _is_theme_unlocked(self, theme: ThemePreset) -> bool:
+        token = theme.unlock_achievement.strip().lower()
+        if not token:
+            return True
+        return bool(self.current_slot.flags.get(f"achv_{token}", False))
+
+    def _reset_theme_visual_tuning(self) -> None:
+        self.config.theme_accent_color = ""
+        self.config.theme_panel_color = ""
+        self.config.theme_dim_color = ""
+        self.config.theme_scan_strength = 1.0
+        self.config.theme_glow_strength = 1.0
+        self.config.theme_particles_strength = 1.0
+
+    def _apply_theme_preset(self, name: str, theme: ThemePreset) -> None:
+        self.config.bg_color = theme.bg
+        self.config.fg_color = theme.fg
+        self.config.theme_accent_color = theme.accent
+        self.config.theme_panel_color = theme.panel
+        self.config.theme_dim_color = theme.dim
+        self.config.theme_scan_strength = theme.scan_strength
+        self.config.theme_glow_strength = theme.glow_strength
+        self.config.theme_particles_strength = theme.particle_strength
+        self._apply_visual_config()
+        self._save_config()
+        self.ui.write(self.tr("app.theme_preset_applied", name=name))
+
+    def _notify_theme_unlocks(self, achievement_id: str) -> None:
+        token = achievement_id.strip().lower()
+        if not token:
+            return
+        unlocked = [
+            name for name, preset in self.theme_presets.items() if preset.unlock_achievement == token
+        ]
+        if not unlocked:
+            return
+
+        if len(unlocked) == 1:
+            names_text = unlocked[0]
+        else:
+            names_text = ", ".join(unlocked[:3])
+            if len(unlocked) > 3:
+                names_text = f"{names_text}, +{len(unlocked) - 3}"
+
+        self.ui.write(self.tr("app.theme_unlock_message", themes=names_text))
+        self.ui.push_notification(
+            self.tr("app.theme_unlock_title"),
+            self.tr("app.theme_unlock_toast", themes=names_text),
+            icon_key="mdi:trophy-outline",
+        )
+
     def _set_theme(self, args: list[str]) -> None:
         if not args:
             self.ui.write(self.tr("app.theme_usage"))
@@ -1390,10 +1835,17 @@ class GethesApp:
                 self._show_theme_list()
                 return
 
-            self.config.bg_color, self.config.fg_color = theme
-            self._apply_visual_config()
-            self._save_config()
-            self.ui.write(self.tr("app.theme_preset_applied", name=token))
+            if not self._is_theme_unlocked(theme):
+                self.ui.write(
+                    self.tr(
+                        "app.theme_locked",
+                        name=token,
+                        achievement=self._theme_unlock_title(theme.unlock_achievement),
+                    )
+                )
+                return
+
+            self._apply_theme_preset(token, theme)
             return
 
         if len(args) != 2:
@@ -1410,6 +1862,7 @@ class GethesApp:
 
         self.config.bg_color = bg
         self.config.fg_color = fg
+        self._reset_theme_visual_tuning()
         self._apply_visual_config()
         self._save_config()
         self.ui.write(self.tr("app.theme_updated", bg=bg, fg=fg))
@@ -1418,15 +1871,58 @@ class GethesApp:
         self.ui.write(self.tr("app.theme_list_title"))
         active = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
         self.ui.write(self.tr("app.theme_mod_path", path=str(self.theme_mods_dir)))
-        for name, colors in self.theme_presets.items():
-            mark = ">" if name == active else "-"
-            bg, fg = colors
-            self.ui.write(self.tr("app.theme_list_item", mark=mark, name=name, bg=bg, fg=fg))
+        for name, preset in self.theme_presets.items():
+            locked = not self._is_theme_unlocked(preset)
+            mark = ">" if name == active else ("x" if locked else "-")
+            self.ui.write(
+                self.tr(
+                    "app.theme_list_item",
+                    mark=mark,
+                    name=name,
+                    bg=preset.bg,
+                    fg=preset.fg,
+                )
+            )
+            lock_text = self.tr("app.theme_unlock_open")
+            if locked:
+                lock_text = self.tr(
+                    "app.theme_unlock_need",
+                    achievement=self._theme_unlock_title(preset.unlock_achievement),
+                )
+            self.ui.write(
+                self.tr(
+                    "app.theme_list_fx",
+                    accent=(preset.accent or "auto"),
+                    scan=f"{preset.scan_strength:.2f}",
+                    glow=f"{preset.glow_strength:.2f}",
+                    particles=f"{preset.particle_strength:.2f}",
+                    lock=lock_text,
+                )
+            )
 
     def _detect_theme_name(self, bg: str, fg: str) -> str:
-        for name, colors in self.theme_presets.items():
-            if colors[0].lower() == bg.lower() and colors[1].lower() == fg.lower():
-                return name
+        cfg_accent = self.config.theme_accent_color.strip().lower()
+        cfg_panel = self.config.theme_panel_color.strip().lower()
+        cfg_dim = self.config.theme_dim_color.strip().lower()
+        for name, preset in self.theme_presets.items():
+            if preset.bg.lower() != bg.lower() or preset.fg.lower() != fg.lower():
+                continue
+            if preset.accent.strip().lower() != cfg_accent:
+                continue
+            if preset.panel.strip().lower() != cfg_panel:
+                continue
+            if preset.dim.strip().lower() != cfg_dim:
+                continue
+            if abs(float(preset.scan_strength) - float(self.config.theme_scan_strength)) > 0.001:
+                continue
+            if abs(float(preset.glow_strength) - float(self.config.theme_glow_strength)) > 0.001:
+                continue
+            if (
+                abs(float(preset.particle_strength) - float(self.config.theme_particles_strength))
+                > 0.001
+            ):
+                continue
+            return name
         return "custom"
 
     def _set_single_color(self, args: list[str], key: str) -> None:
@@ -1444,6 +1940,7 @@ class GethesApp:
         else:
             self.config.fg_color = color
 
+        self._reset_theme_visual_tuning()
         self._apply_visual_config()
         self._save_config()
         self.ui.write(self.tr("app.color_updated", key=key, color=color))
@@ -1539,12 +2036,20 @@ class GethesApp:
             self._show_update_status()
             return
 
+        if action == "notes":
+            self._show_update_notes()
+            return
+
         if action == "check":
             self._start_update_check(user_feedback=True)
             return
 
         if action == "install":
             self._start_update_install()
+            return
+
+        if action == "cancel":
+            self._cancel_update_download()
             return
 
         if action == "repo":
@@ -1625,7 +2130,37 @@ class GethesApp:
                 version=self.pending_update.latest_version,
             )
         )
+        self.ui.write(
+            self.tr(
+                "app.update.status_release",
+                name=(self.pending_update.release_name or self.pending_update.tag_name),
+            )
+        )
         self.ui.write(self.tr("app.update.install_hint"))
+
+    def _show_update_notes(self) -> None:
+        if self.pending_update is None:
+            self.ui.write(self.tr("app.update.notes_none"))
+            return
+
+        title = self.pending_update.release_name or self.pending_update.tag_name
+        self.ui.write(self.tr("app.update.notes_title", name=title))
+        notes = self.pending_update.release_notes.strip()
+        if not notes:
+            self.ui.write(self.tr("app.update.notes_empty"))
+            return
+        for raw_line in notes.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            self.ui.write(self.tr("app.update.notes_line", line=line))
+
+    def _cancel_update_download(self) -> None:
+        if not self.update_install_running or self.update_cancel_event is None:
+            self.ui.write(self.tr("app.update.cancel_idle"))
+            return
+        self.update_cancel_event.set()
+        self.ui.write(self.tr("app.update.cancel_request"))
 
     def _start_update_check(self, user_feedback: bool) -> None:
         if self.update_check_running or self.update_install_running:
@@ -1689,7 +2224,7 @@ class GethesApp:
         target = self._runtime_update_target()
         if target is not None and update.portable_url:
             app_dir, _ = target
-            if self.update_manager.can_self_update_portable(app_dir):
+            if self.update_manager.can_portable_update(app_dir):
                 return "portable"
         if update.installer_url:
             return "installer"
@@ -1702,27 +2237,65 @@ class GethesApp:
             self.ui.write(self.tr("app.update.busy"))
             return
 
+        self.update_manager.cleanup_update_artifacts(self.update_download_dir)
         method = self._choose_update_method(update, preferred_method=preferred_method)
         if method == "none":
             self.ui.write(self.tr("app.update.asset_missing"))
             return
 
         self.update_install_running = True
+        self.update_cancel_event = threading.Event()
+        self.update_downloaded_bytes = 0
+        self.update_download_total_bytes = 0
         self.ui.write(self.tr("app.update.downloading", version=update.latest_version))
         self.ui.set_status(self.tr("app.update.status_downloading"))
 
         def worker() -> None:
+            last_emit = 0.0
+
+            def progress(downloaded: int, total: int) -> None:
+                nonlocal last_emit
+                now = time.monotonic()
+                should_emit = (now - last_emit) >= 0.22 or (total > 0 and downloaded >= total)
+                if not should_emit:
+                    return
+                last_emit = now
+                self.update_events.put(
+                    (
+                        "download_progress",
+                        {
+                            "downloaded": int(downloaded),
+                            "total": int(total),
+                        },
+                    )
+                )
+
             try:
                 if method == "portable":
                     downloaded = self.update_manager.download_portable_zip(
                         update,
                         self.update_download_dir,
+                        progress_callback=progress,
+                        cancel_event=self.update_cancel_event,
                     )
                 else:
                     downloaded = self.update_manager.download_installer(
                         update,
                         self.update_download_dir,
+                        progress_callback=progress,
+                        cancel_event=self.update_cancel_event,
                     )
+
+                self.update_events.put(("download_verifying", {}))
+                verified, checksum_status = self.update_manager.verify_asset_checksum(
+                    downloaded,
+                    update,
+                    self.update_download_dir,
+                    cancel_event=self.update_cancel_event,
+                )
+                if not verified:
+                    raise RuntimeError(checksum_status)
+
                 self.update_events.put(
                     (
                         "install_downloaded",
@@ -1730,6 +2303,7 @@ class GethesApp:
                             "path": str(downloaded),
                             "version": update.latest_version,
                             "method": method,
+                            "checksum_status": checksum_status,
                         },
                     )
                 )
@@ -1744,6 +2318,11 @@ class GethesApp:
                 )
 
         threading.Thread(target=worker, daemon=True, name="gethes-update-install").start()
+
+    def _format_megabytes(self, value: int) -> str:
+        if value <= 0:
+            return "0.0"
+        return f"{(value / (1024 * 1024)):.1f}"
 
     def _process_update_events(self) -> None:
         while True:
@@ -1764,9 +2343,41 @@ class GethesApp:
                 self._consume_update_install_failed(payload)
                 continue
 
+            if event == "download_progress":
+                self._consume_update_progress(payload)
+                continue
+
+            if event == "download_verifying":
+                self.ui.set_status(self.tr("app.update.status_verifying"))
+                continue
+
             if event == "mod_change":
                 self._consume_mod_change(payload)
                 continue
+
+    def _consume_update_progress(self, payload: dict[str, object]) -> None:
+        downloaded = int(payload.get("downloaded", 0) or 0)
+        total = int(payload.get("total", 0) or 0)
+        self.update_downloaded_bytes = max(0, downloaded)
+        self.update_download_total_bytes = max(0, total)
+
+        if total > 0:
+            percent = min(100, int((downloaded * 100) / total))
+            self.ui.set_status(
+                self.tr(
+                    "app.update.status_progress",
+                    percent=percent,
+                    downloaded=self._format_megabytes(downloaded),
+                    total=self._format_megabytes(total),
+                )
+            )
+        else:
+            self.ui.set_status(
+                self.tr(
+                    "app.update.status_progress_unknown",
+                    downloaded=self._format_megabytes(downloaded),
+                )
+            )
 
     def _consume_mod_change(self, payload: dict[str, object]) -> None:
         tag = str(payload.get("tag", "")).strip().lower()
@@ -1855,6 +2466,9 @@ class GethesApp:
 
     def _consume_update_downloaded(self, payload: dict[str, object]) -> None:
         self.update_install_running = False
+        self.update_cancel_event = None
+        self.update_downloaded_bytes = 0
+        self.update_download_total_bytes = 0
 
         raw_path = payload.get("path")
         if not isinstance(raw_path, str) or not raw_path:
@@ -1863,7 +2477,13 @@ class GethesApp:
             return
 
         method = str(payload.get("method", "installer")).strip().lower()
+        checksum_status = str(payload.get("checksum_status", "")).strip().lower()
         downloaded_path = Path(raw_path)
+
+        if checksum_status == "checksum_ok":
+            self.ui.write(self.tr("app.update.checksum_ok"))
+        elif checksum_status == "checksum_missing":
+            self.ui.write(self.tr("app.update.checksum_missing"))
 
         if method == "portable":
             target = self._runtime_update_target()
@@ -1877,13 +2497,18 @@ class GethesApp:
                 return
 
             app_dir, exe_path = target
-            launched = self.update_manager.launch_portable_self_update(
+            launch_status = self.update_manager.launch_portable_self_update(
                 zip_path=downloaded_path,
                 app_dir=app_dir,
                 exe_path=exe_path,
                 working_dir=self.update_download_dir,
             )
-            if not launched:
+            if launch_status == "elevation_denied":
+                self.ui.write(self.tr("app.update.elevation_denied"))
+                self.ui.set_status(self.tr("ui.ready"))
+                return
+
+            if launch_status not in {"launched", "launched_elevated"}:
                 self.ui.write(self.tr("app.update.portable_unavailable"))
                 if self.pending_update is not None and self.pending_update.installer_url:
                     self.ui.write(self.tr("app.update.fallback_installer"))
@@ -1892,6 +2517,8 @@ class GethesApp:
                     self.ui.set_status(self.tr("ui.ready"))
                 return
 
+            if launch_status == "launched_elevated":
+                self.ui.write(self.tr("app.update.elevation_requested"))
             self.ui.write(self.tr("app.update.applying_portable"))
             self.ui.write(self.tr("app.update.installing_exit"))
             self._shutdown()
@@ -1910,8 +2537,17 @@ class GethesApp:
 
     def _consume_update_install_failed(self, payload: dict[str, object]) -> None:
         self.update_install_running = False
+        self.update_cancel_event = None
+        self.update_downloaded_bytes = 0
+        self.update_download_total_bytes = 0
         self.ui.set_status(self.tr("ui.ready"))
         error_msg = str(payload.get("error", "")).strip()
+        if error_msg == "cancelled":
+            self.ui.write(self.tr("app.update.cancelled"))
+            return
+        if error_msg.startswith("checksum_"):
+            self.ui.write(self.tr("app.update.checksum_failed", error=error_msg))
+            return
         if error_msg:
             self.ui.write(self.tr("app.update.download_failed", error=error_msg))
         else:
@@ -1957,6 +2593,12 @@ class GethesApp:
                 font_family=self.config.font_family,
                 font_size=self.config.font_size,
                 ui_scale=self.config.ui_scale,
+                accent_color=(self.config.theme_accent_color or None),
+                panel_color=(self.config.theme_panel_color or None),
+                dim_color=(self.config.theme_dim_color or None),
+                scan_strength=self.config.theme_scan_strength,
+                glow_strength=self.config.theme_glow_strength,
+                particle_strength=self.config.theme_particles_strength,
             )
         except Exception:
             self.config = GameConfig()
@@ -1966,6 +2608,12 @@ class GethesApp:
                 font_family=self.config.font_family,
                 font_size=self.config.font_size,
                 ui_scale=self.config.ui_scale,
+                accent_color=(self.config.theme_accent_color or None),
+                panel_color=(self.config.theme_panel_color or None),
+                dim_color=(self.config.theme_dim_color or None),
+                scan_strength=self.config.theme_scan_strength,
+                glow_strength=self.config.theme_glow_strength,
+                particle_strength=self.config.theme_particles_strength,
             )
         self._apply_performance_config()
 
@@ -2115,6 +2763,7 @@ class GethesApp:
                 "- `gato` / `tictactoe`",
                 "- `codigo` / `codebreaker`",
                 "- `physics`",
+                "- `roguelike` / `rogue`",
                 "- `historia`",
                 "",
                 self.tr("app.welcome.saves"),
@@ -2139,6 +2788,7 @@ class GethesApp:
             f"- gato / tictactoe         : {self.tr('app.help.tictactoe')}",
             f"- codigo / codebreaker     : {self.tr('app.help.codebreaker')}",
             f"- physics                  : {self.tr('app.help.physics')}",
+            f"- roguelike / rogue        : {self.tr('app.help.roguelike')}",
             f"- historia / story         : {self.tr('app.help.story')}",
             f"- logros / achievements    : {self.tr('app.help.achievements')}",
             f"- slots                    : {self.tr('app.help.slots')}",
@@ -2185,6 +2835,10 @@ class GethesApp:
                 f"- {self.tr('app.options.graphics'):13}: {self.config.graphics}",
                 f"- {self.tr('app.options.fps'):13}: {self.ui.get_target_fps()}",
                 f"- {self.tr('app.options.theme'):13}: {theme_value}",
+                f"- {self.tr('app.options.theme_fx'):13}: "
+                f"scan {self.config.theme_scan_strength:.2f} | "
+                f"glow {self.config.theme_glow_strength:.2f} | "
+                f"particles {self.config.theme_particles_strength:.2f}",
                 f"- {self.tr('app.options.themes_count'):13}: {len(self.theme_presets)}",
                 f"- {self.tr('app.options.ui_scale'):13}: {self.config.ui_scale:.2f}x",
                 f"- {self.tr('app.options.version'):13}: {__version__}",
