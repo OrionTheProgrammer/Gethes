@@ -48,6 +48,27 @@ ACHIEVEMENTS: tuple[AchievementDef, ...] = (
         desc_key="achievement.story_complete.desc",
     ),
     AchievementDef(
+        achievement_id="story_first_choice",
+        title_key="achievement.story_first_choice.title",
+        desc_key="achievement.story_first_choice.desc",
+    ),
+    AchievementDef(
+        achievement_id="story_secret_finder",
+        title_key="achievement.story_secret_finder.title",
+        desc_key="achievement.story_secret_finder.desc",
+    ),
+    AchievementDef(
+        achievement_id="story_archivist",
+        title_key="achievement.story_archivist.title",
+        desc_key="achievement.story_archivist.desc",
+    ),
+    AchievementDef(
+        achievement_id="story_companion_route",
+        title_key="achievement.story_companion_route.title",
+        desc_key="achievement.story_companion_route.desc",
+        hidden=True,
+    ),
+    AchievementDef(
         achievement_id="codebreaker_win",
         title_key="achievement.codebreaker_win.title",
         desc_key="achievement.codebreaker_win.desc",

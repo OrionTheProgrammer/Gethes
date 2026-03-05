@@ -44,6 +44,7 @@ BUILTIN_THEME_PRESETS: dict[str, tuple[str, str]] = {
     "amber": ("#0D0905", "#FFCF84"),
 }
 DEFAULT_UPDATE_REPO = "OrionTheProgrammer/Gethes"
+SYSTER_ENABLED = False
 SFX_EVENT_ALIASES: dict[str, str] = {
     "msg": "message",
     "mensaje": "message",
@@ -100,11 +101,17 @@ class GethesApp:
         self.current_slot = self.save_manager.load_slot(self._clamp_slot(self.config.active_slot))
         self.config.active_slot = self.current_slot.slot_id
 
+        self.syster_enabled = SYSTER_ENABLED
         self.syster = SysterAssistant(
             mode=self.config.syster_mode,
             remote_endpoint=self.config.syster_endpoint or None,
         )
+        if not self.syster_enabled:
+            self.syster.set_mode("off")
+            self.syster.set_remote_endpoint(None)
         self.config.syster_mode = self.syster.mode
+        if not self.syster_enabled:
+            self.config.syster_endpoint = ""
 
         self.ui = ConsoleUI(
             title=self.tr("ui.title"),
@@ -162,7 +169,8 @@ class GethesApp:
             self.snake.update(dt)
         if self.physics_lab.active:
             self.physics_lab.update(dt)
-        self._update_syster_autochat()
+        if self.syster_enabled:
+            self._update_syster_autochat()
 
     def set_input_handler(self, handler: Callable[[str], None]) -> None:
         self.input_handler = handler
@@ -174,6 +182,55 @@ class GethesApp:
         self.current_slot.story_page = max(0, page)
         self.current_slot.story_total = max(0, total)
         self.current_slot.story_title = title
+
+    def on_story_choice_made(self, choice_flag: str) -> None:
+        token = choice_flag.strip()
+        if not token:
+            return
+        event_flag = f"story_choice_seen_{token}"
+        if self.current_slot.flags.get(event_flag, False):
+            return
+        self.current_slot.flags[event_flag] = True
+        self.bump_stat("story_choices_total", 1)
+        self._unlock_achievement("story_first_choice")
+        self._save_current_slot(user_feedback=False)
+
+    def on_story_secret_unlocked(self, secret_id: str) -> None:
+        token = secret_id.strip().lower()
+        if not token:
+            return
+        flag = f"story_secret_unlocked_{token}"
+        if self.current_slot.flags.get(flag, False):
+            return
+        self.current_slot.flags[flag] = True
+        self.bump_stat("story_secrets_unlocked", 1)
+        self._unlock_achievement("story_secret_finder")
+        self._save_current_slot(user_feedback=False)
+
+    def on_story_secret_viewed(self, secret_id: str) -> None:
+        token = secret_id.strip().lower()
+        if not token:
+            return
+        flag = f"story_secret_read_{token}"
+        if self.current_slot.flags.get(flag, False):
+            return
+        self.current_slot.flags[flag] = True
+        total_read = self.bump_stat("story_secrets_read", 1)
+        if total_read >= 3:
+            self._unlock_achievement("story_archivist")
+        self._save_current_slot(user_feedback=False)
+
+    def on_story_route_entered(self, route_id: str) -> None:
+        token = route_id.strip().lower()
+        if not token:
+            return
+        flag = f"story_route_{token}"
+        if self.current_slot.flags.get(flag, False):
+            return
+        self.current_slot.flags[flag] = True
+        if token == "companion":
+            self._unlock_achievement("story_companion_route")
+        self._save_current_slot(user_feedback=False)
 
     def get_stat(self, key: str, default: int = 0) -> int:
         value = self.current_slot.stats.get(key, default)
@@ -513,10 +570,10 @@ class GethesApp:
         ):
             return
 
-        if self._trigger_syster_auto("idle"):
+        if self.syster_enabled and self._trigger_syster_auto("idle"):
             return
 
-        if self.idle_count % 3 == 2:
+        if self.syster_enabled and self.idle_count % 3 == 2:
             self.ui.write(self.tr("app.idle.secret"))
         else:
             self.ui.write(self.tr("app.idle.help"))
@@ -685,6 +742,8 @@ class GethesApp:
         self.ui.write(self.tr("app.unknown", cmd=cmd))
 
     def _queue_syster_auto_from_command(self, cmd: str) -> None:
+        if not self.syster_enabled:
+            return
         if self.syster.mode == "off":
             return
         if cmd in {"syster", "save", "savegame", "exit", "salir", "sair", "quit"}:
@@ -696,6 +755,8 @@ class GethesApp:
             self.syster_auto_pending = True
 
     def _update_syster_autochat(self) -> None:
+        if not self.syster_enabled:
+            return
         if not self.syster_auto_pending:
             return
         if self._trigger_syster_auto("command"):
@@ -721,6 +782,8 @@ class GethesApp:
         return "help"
 
     def _trigger_syster_auto(self, trigger: str) -> bool:
+        if not self.syster_enabled:
+            return False
         if self.syster.mode == "off":
             return False
         if (
@@ -752,6 +815,10 @@ class GethesApp:
         return True
 
     def _handle_syster(self, args: list[str]) -> None:
+        if not self.syster_enabled:
+            self.ui.write(self.tr("app.syster.temporarily_disabled"))
+            return
+
         if not args:
             self.ui.write(
                 self.tr(
@@ -2061,43 +2128,45 @@ class GethesApp:
         )
 
     def _help_text(self) -> str:
-        return "\n".join(
-            [
-                self.tr("app.help.title"),
-                f"- help                     : {self.tr('app.help.help')}",
-                f"- clear                    : {self.tr('app.help.clear')}",
-                f"- menu                     : {self.tr('app.help.menu')}",
-                f"- snake                    : {self.tr('app.help.snake')}",
-                f"- ahorcado1 / hangman1     : {self.tr('app.help.hangman1')}",
-                f"- ahorcado2 / hangman2     : {self.tr('app.help.hangman2')}",
-                f"- gato / tictactoe         : {self.tr('app.help.tictactoe')}",
-                f"- codigo / codebreaker     : {self.tr('app.help.codebreaker')}",
-                f"- physics                  : {self.tr('app.help.physics')}",
-                f"- historia / story         : {self.tr('app.help.story')}",
-                f"- logros / achievements    : {self.tr('app.help.achievements')}",
-                f"- slots                    : {self.tr('app.help.slots')}",
-                f"- slot <1-3>               : {self.tr('app.help.slot')}",
-                f"- slotname <nombre>        : {self.tr('app.help.slotname')}",
-                f"- savegame                 : {self.tr('app.help.savegame')}",
-                f"- options / opciones       : {self.tr('app.help.options')}",
-                f"- sound <on|off>           : {self.tr('app.help.sound')}",
-                f"- graphics <low|medium|high>: {self.tr('app.help.graphics')}",
-                f"- uiscale <0.7-2.5>        : {self.tr('app.help.uiscale')}",
-                f"- theme <preset|list|reload|bg fg>: {self.tr('app.help.theme')}",
-                f"- bg <color>               : {self.tr('app.help.bg')}",
-                f"- fg <color>               : {self.tr('app.help.fg')}",
-                f"- font <familia> [tamano]  : {self.tr('app.help.font')}",
-                f"- fonts [filtro]           : {self.tr('app.help.fonts')}",
-                f"- lang [auto|es|en|pt]     : {self.tr('app.help.lang')}",
-                f"- update ...               : {self.tr('app.help.update')}",
-                f"- syster ...               : {self.tr('app.help.syster')}",
-                f"- syster endpoint <url|off>: {self.tr('app.help.syster_endpoint')}",
-                f"- mods <status|reload>     : {self.tr('app.help.mods')}",
-                f"- sfx                      : {self.tr('app.help.sfx')}",
-                f"- save                     : {self.tr('app.help.save')}",
-                f"- exit                     : {self.tr('app.help.exit')}",
-            ]
-        )
+        lines = [
+            self.tr("app.help.title"),
+            f"- help                     : {self.tr('app.help.help')}",
+            f"- clear                    : {self.tr('app.help.clear')}",
+            f"- menu                     : {self.tr('app.help.menu')}",
+            f"- snake                    : {self.tr('app.help.snake')}",
+            f"- ahorcado1 / hangman1     : {self.tr('app.help.hangman1')}",
+            f"- ahorcado2 / hangman2     : {self.tr('app.help.hangman2')}",
+            f"- gato / tictactoe         : {self.tr('app.help.tictactoe')}",
+            f"- codigo / codebreaker     : {self.tr('app.help.codebreaker')}",
+            f"- physics                  : {self.tr('app.help.physics')}",
+            f"- historia / story         : {self.tr('app.help.story')}",
+            f"- logros / achievements    : {self.tr('app.help.achievements')}",
+            f"- slots                    : {self.tr('app.help.slots')}",
+            f"- slot <1-3>               : {self.tr('app.help.slot')}",
+            f"- slotname <nombre>        : {self.tr('app.help.slotname')}",
+            f"- savegame                 : {self.tr('app.help.savegame')}",
+            f"- options / opciones       : {self.tr('app.help.options')}",
+            f"- sound <on|off>           : {self.tr('app.help.sound')}",
+            f"- graphics <low|medium|high>: {self.tr('app.help.graphics')}",
+            f"- uiscale <0.7-2.5>        : {self.tr('app.help.uiscale')}",
+            f"- theme <preset|list|reload|bg fg>: {self.tr('app.help.theme')}",
+            f"- bg <color>               : {self.tr('app.help.bg')}",
+            f"- fg <color>               : {self.tr('app.help.fg')}",
+            f"- font <familia> [tamano]  : {self.tr('app.help.font')}",
+            f"- fonts [filtro]           : {self.tr('app.help.fonts')}",
+            f"- lang [auto|es|en|pt]     : {self.tr('app.help.lang')}",
+            f"- update ...               : {self.tr('app.help.update')}",
+            f"- mods <status|reload>     : {self.tr('app.help.mods')}",
+            f"- sfx                      : {self.tr('app.help.sfx')}",
+            f"- save                     : {self.tr('app.help.save')}",
+            f"- exit                     : {self.tr('app.help.exit')}",
+        ]
+        if self.syster_enabled:
+            lines.append(f"- syster ...               : {self.tr('app.help.syster')}")
+            lines.append(
+                f"- syster endpoint <url|off>: {self.tr('app.help.syster_endpoint')}"
+            )
+        return "\n".join(lines)
 
     def _options_text(self) -> str:
         active_theme = self._detect_theme_name(self.config.bg_color, self.config.fg_color)

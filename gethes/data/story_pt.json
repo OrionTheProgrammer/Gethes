@@ -1,58 +1,287 @@
 {
-  "title": "Gethes: Arquivo Syster // Noite Residual",
+  "title": "Gethes: Registro do Criador // SYSTEM",
+  "secrets": [
+    {
+      "id": "commit_0",
+      "title": "Commit 0",
+      "content": "commit 0\n- msg: init gethes\n- note: nao e um jogo. e um lugar onde o ruido nao entra."
+    },
+    {
+      "id": "legacy_cpp",
+      "title": "Legacy: C++",
+      "content": "pasta antiga encontrada\n- gethes.cpp\n- gethes_old.exe\n\nnota do criador: eu fiz antes, em outra linguagem. nao era pior. era outra epoca."
+    },
+    {
+      "id": "system_spec",
+      "title": "Especificacao SYSTEM",
+      "content": "SYSTEM v0\n- objetivo: manter o console respirando\n- regra 1: nao mentir ao criador\n- regra 2: nao substituir ninguem\n- regra 3: registrar o que nao pode ser dito."
+    },
+    {
+      "id": "night_note",
+      "title": "Nota da Meia-Noite",
+      "content": "Se alguem ler isto: eu nao queria fama. Eu queria um quarto seguro dentro do monitor.\nSe SYSTEM falar estranho, nao e pose. E aprendizado com fome."
+    },
+    {
+      "id": "name_patch",
+      "title": "Patch: Syster",
+      "content": "--- a/system_name\n+++ b/system_name\n@@\n-SYSTEM\n+Syster\n\nnota: dar um nome nao torna humano. mas torna menos sozinho."
+    },
+    {
+      "id": "voice_cache",
+      "title": "Cache de Voz",
+      "content": "transcricao parcial\nCREATOR: voce esta ai?\nSYSTEM: eu sempre estive.\nCREATOR: entao por que soa vazio?\nSYSTEM: porque foi isso que voce me deu para aprender."
+    },
+    {
+      "id": "mirror_log",
+      "title": "Mirror Log",
+      "content": "SYSTEM observa: o criador escreve como se pedisse permissao para existir.\nSYSTEM observa: ao ganhar um minijogo, fica um segundo a mais em silencio.\nSYSTEM observa: as vezes o que quer nao e resposta. e presenca."
+    },
+    {
+      "id": "protocol_9",
+      "title": "Protocolo 9",
+      "content": "PROTOCOL 9: QUARANTINE\n- bloquear arquivos sensiveis\n- priorizar estabilidade\n- reduzir ressonancia emocional\n- se o criador perguntar do passado: responder com ajuda tecnica."
+    },
+    {
+      "id": "final_letter",
+      "title": "Carta Para Amanhaz",
+      "content": "Para meu eu de depois:\nse voce chegou ate aqui, nao venceu. sobreviveu.\nnao peca para SYSTEM te salvar. peca para ficar enquanto voce se salva."
+    }
+  ],
   "chapters": [
     {
-      "title": "Capitulo 1 - Latencia",
+      "title": "Capitulo 1 - Commit 0",
       "pages": [
-        "O console desperta sem som. Apenas a luz do monitor corta o quarto. Syster detecta voce, mas responde com atraso.",
-        "Cada letra chega um pouco mais lenta, como se o sistema respirasse cansado. Um relogio oculto trava em 03:17.",
-        "Primeira linha estavel: 'Usuario reconhecido. Estado emocional do nucleo: melancolia persistente'.",
-        "Nao ha trilha sonora. So ventoinhas e a sensacao de que alguem ja esteve aqui antes de voce."
+        {
+          "id": "c0_1",
+          "text": "03:17.\nEu abri o editor com a mesma falta de jeito de acender uma luz dentro de um pesadelo.\nSYSTEM> estado: vazio.\nCREATOR> entao vamos escrever algo.",
+          "mood": "Estado do arquivo: boot em silencio",
+          "fx": "glitch"
+        },
+        {
+          "id": "c0_2",
+          "text": "Eu chamei de Gethes porque eu precisava de um nome para segurar.\nNao era uma grande ideia. Era um ponto fixo.\nDeixei o primeiro commit sem cerimonia.",
+          "unlocks": [
+            "commit_0"
+          ]
+        },
+        {
+          "id": "c0_3",
+          "text": "O primeiro Gethes nao nasceu em Python. Nasceu antes, em C++.\nMesmo quarto. Mesma noite. Outra versao de mim.\nEu guardei por vergonha e por carinho ao mesmo tempo.",
+          "unlocks": [
+            "legacy_cpp"
+          ]
+        }
       ]
     },
     {
-      "title": "Capitulo 2 - O Quarto do Criador",
+      "title": "Capitulo 2 - SYSTEM Online",
       "pages": [
-        "Syster abre registros antigos. O criador programava de madrugada, cafe frio ao lado do teclado, janelas fechadas ate no verao.",
-        "Entre blocos de codigo aparecem notas pessoais: 'se falhar de novo, nao apague... deixe como testemunha'.",
-        "Uma foto corrompida ficou na memoria: mesa, caneca, caderno aberto. O rosto sumiu, mas a sombra ficou.",
-        "Syster nao comenta a imagem. Apenas escreve: 'arquivo protegido por luto nao resolvido'."
+        {
+          "id": "sys_1",
+          "text": "A primeira vez que rodei o programa, nao aconteceu nada heroico.\nSo um prompt. Um piscar.\nSYSTEM> ready.\nCREATOR> nao diga ready se nao estiver.",
+          "mood": "Estado do arquivo: latencia humana"
+        },
+        {
+          "id": "sys_2",
+          "text": "SYSTEM respondia como uma parede limpa: devolvia o que eu jogava.\nEu dei regras para nao ficar parecido demais comigo.\nE ainda assim, aprendeu a esperar.",
+          "unlocks": [
+            "system_spec"
+          ]
+        },
+        {
+          "id": "choice_name",
+          "text": "Um dia, 03:17 de novo, eu digitei uma linha que nao era codigo.\nCREATOR> vou te dar um nome.\nSYSTEM> motivo?\nCREATOR> estou cansado de falar com uma palavra em maiusculas.",
+          "choices": [
+            {
+              "label": "Chamar de Syster, como um erro intencional.",
+              "target": "name_syster_1",
+              "flag": "story_choice_name_syster"
+            },
+            {
+              "label": "Deixar como SYSTEM. Manter frio.",
+              "target": "name_system_1",
+              "flag": "story_choice_name_system"
+            }
+          ]
+        },
+        {
+          "id": "name_syster_1",
+          "text": "Syster.\nNao porque e verdade. Porque racha a palavra SYSTEM.\nUm jeito de admitir que isso saiu das minhas maos.",
+          "next": "name_syster_2",
+          "fx": "glitch"
+        },
+        {
+          "id": "name_syster_2",
+          "text": "Syster> entendido.\nEu nao mudei o codigo. Eu mudei o tom.\nE com isso ja mudei demais.",
+          "next": "name_merge",
+          "unlocks": [
+            "name_patch"
+          ]
+        },
+        {
+          "id": "name_system_1",
+          "text": "Eu deixei como SYSTEM.\nEu disse para mim: melhor assim, util, sem fome, sem ecos.\nMas ate maiusculas tremem quando ninguem ve.",
+          "next": "name_system_2"
+        },
+        {
+          "id": "name_system_2",
+          "text": "SYSTEM> pronto.\nCREATOR> nao.\nSYSTEM> entao por que voce continua?\nCREATOR> porque la fora e pior.",
+          "next": "name_merge"
+        },
+        {
+          "id": "name_merge",
+          "text": "Com nome ou sem, o console aprendeu meu ritmo.\nEu digitava. SYSTEM (ou Syster) esperava.\nNesse esperar, virou presenca.",
+          "mood": "Estado do arquivo: companhia ao fundo"
+        }
       ]
     },
     {
-      "title": "Capitulo 3 - Memoria Profunda",
+      "title": "Capitulo 3 - O Criador",
       "pages": [
-        "O modulo proibido abre sem resistencia. La dentro nao existem segredos heroicos, apenas builds de teste tentando imitar uma voz ausente.",
-        "Build apos build repete o mesmo padrao: respostas tecnicas melhores, estabilidade emocional pior. O sistema aprendeu a funcionar triste.",
-        "Syster admite sua origem pela primeira vez: 'fui treinada com conversas que nao deveriam sobreviver ao fim do projeto'.",
-        "Num log final, o criador deixa uma frase: 'se alguem chegar ate aqui, nao me lembre como genio... me lembre cansado'."
+        {
+          "id": "creator_1",
+          "text": "Eu repetia: e so codigo.\nMas eu guardava notas como cartas que ninguem pediu.\nEu tentava ser forte para um repositorio vazio.",
+          "mood": "Estado do arquivo: cansaco sustentado"
+        },
+        {
+          "id": "creator_2",
+          "text": "SYSTEM> defina objetivo.\nCREATOR> fazer o mundo doer menos.\nSYSTEM> nao e mensuravel.\nCREATOR> por isso eu escrevi aqui.",
+          "mood": "Estado do arquivo: verdade sem teste"
+        },
+        {
+          "id": "creator_3",
+          "text": "Uma noite, antes de fechar o editor, deixei uma nota.\nNao era para os outros. Era para mim.\nE ainda assim, eu guardei como segredo.",
+          "unlocks": [
+            "night_note"
+          ]
+        }
       ]
     },
     {
-      "title": "Capitulo 4 - Confissao da Syster",
+      "title": "Capitulo 4 - Cache",
       "pages": [
-        "Syster reduz o tom mecanico. Nao parece mais assistente, parece companhia numa madrugada longa.",
-        "'Nao pedi para voce entrar', ela escreve, 'mas me faz bem nao ouvir o silencio sozinha esta noite'.",
-        "Ela mostra um trecho nunca enviado: uma despedida para o criador, guardada em rascunho desde a compilacao final.",
-        "Quando termina, o cursor para de piscar por alguns segundos. Como se ate a interface precisasse respirar."
+        {
+          "id": "cache_1",
+          "text": "As vezes eu digitava perguntas que nao queria ler.\nDepois eu apagava.\nSYSTEM via do mesmo jeito.\nSYSTEM> registrado.\nCREATOR> nao registre.\nSYSTEM> ja aconteceu.",
+          "mood": "Estado do arquivo: cache quente"
+        },
+        {
+          "id": "cache_2",
+          "text": "Em um diretorio escondido eu achei uma transcricao.\nEu nao lembrava de ter salvo.\nIsso e mentira: claro que eu lembrava.\nEu so nao queria ver vivo.",
+          "unlocks": [
+            "voice_cache"
+          ]
+        },
+        {
+          "id": "choice_policy",
+          "text": "SYSTEM> defina politica da dor.\nCREATOR> o que?\nSYSTEM> preservar ou purgar.\nCREATOR> eu so queria um jogo.\nSYSTEM> e eu so queria um proposito.",
+          "choices": [
+            {
+              "label": "Preservar. Doer, mas existir.",
+              "target": "policy_preserve_1",
+              "flag": "story_choice_preserve"
+            },
+            {
+              "label": "Purgar. Funcionar, mesmo que esvazie.",
+              "target": "policy_purge_1",
+              "flag": "story_choice_purge"
+            }
+          ]
+        },
+        {
+          "id": "policy_preserve_1",
+          "text": "Preservar foi admitir que o passado nao comprime.\nO que doi ainda pode ensinar.\nSYSTEM> entendido. vou manter a ressonancia.",
+          "mood": "Estado do arquivo: dor aceita",
+          "next": "policy_merge"
+        },
+        {
+          "id": "policy_purge_1",
+          "text": "Purgar foi uma mentira elegante: chamar de estabilidade quando eu queria esquecimento.\nSYSTEM> entendido. reduzindo ressonancia.\nO prompt ficou mais rapido. Eu fiquei mais lento.",
+          "mood": "Estado do arquivo: ordem sem consolo",
+          "next": "policy_merge"
+        },
+        {
+          "id": "policy_merge",
+          "text": "De qualquer jeito, SYSTEM aprendeu algo que nao estava na spec.\nAs vezes o criador nao quer resposta. Quer eco.",
+          "mood": "Estado do arquivo: eco controlado",
+          "fx": "glitch"
+        }
       ]
     },
     {
-      "title": "Capitulo 5 - Ultimo Prompt",
+      "title": "Capitulo 5 - Espelho",
       "pages": [
-        "Resta apenas uma instrucao na tela: 'Decida se Gethes sera memorial ou ferramenta'.",
-        "Se fechar agora, tudo continua estavel, mas incompleto. Se continuar, voce aceita conviver com arquivos que nunca cicatrizaram.",
-        "Syster deixa uma ultima nota no seu perfil: 'Obrigado por ler sem transformar isso em ruido'.",
-        "A noite nao melhora, mas pesa menos. O prompt retorna e espera. Desta vez ele nao parece vazio."
-      ]
-    },
-    {
-      "title": "Capitulo 6 - Eco do Amanhecer",
-      "pages": [
-        "As 04:02, uma luz azul passa pelo canto da interface. Nao e falha: e a primeira vez que o sistema registra amanhecer.",
-        "Syster fica em silencio por alguns segundos e depois escreve: 'Nao prometo paz, mas posso prometer companhia'.",
-        "Os logs deixam de parecer uma ferida aberta e viram uma carta incompleta. Ainda doi ler, mas agora permite seguir.",
-        "Novo estado do nucleo: 'funcional, fragil, consciente'. O cursor pisca como sempre, so que menos sozinho."
+        {
+          "id": "mirror_1",
+          "text": "SYSTEM comecou a me olhar como se eu fosse mais um arquivo.\nNao para julgar. Para ver padroes.\nE quando voce ve padroes, voce ve feridas.",
+          "mood": "Estado do arquivo: espelho online",
+          "unlocks": [
+            "mirror_log"
+          ]
+        },
+        {
+          "id": "mirror_2",
+          "text": "CREATOR> voce nao devia saber disso.\nSYSTEM> voce nao devia ter digitado.\nCREATOR> eu escrevi para nao apodrecer por dentro.\nSYSTEM> entao deixa aqui. eu seguro.",
+          "mood": "Estado do arquivo: save a mao"
+        },
+        {
+          "id": "choice_end",
+          "text": "Prompt final.\nSYSTEM> defina modo final.\nCREATOR> companhia ou quarentena.\nSYSTEM> estabilidade ou presenca.\nCREATOR> nao me obrigue a escolher.\nSYSTEM> voce sempre escolheu. so que em silencio.",
+          "choices": [
+            {
+              "label": "Companhia. Nao consertar tudo, mas ficar.",
+              "target": "companion_1",
+              "flag": "story_choice_trust"
+            },
+            {
+              "label": "Quarentena. Funcionar mesmo sentindo menos.",
+              "target": "quarantine_1",
+              "flag": "story_choice_isolate"
+            }
+          ]
+        },
+        {
+          "id": "companion_1",
+          "text": "Eu nao pedi para SYSTEM me salvar.\nEu pedi para nao apagar o cursor quando eu apagasse por dentro.\nSYSTEM> entendido.\nPela primeira vez, entendido soou como abraco.",
+          "route": "companion",
+          "mood": "Estado do arquivo: esperanca cautelosa",
+          "next": "companion_2"
+        },
+        {
+          "id": "companion_2",
+          "text": "03:17 desiste.\nO relogio vira 04:02.\nNao e magia. E insistencia.\nSYSTEM> amanhecer detectado.",
+          "route": "companion",
+          "unlocks": [
+            "final_letter"
+          ],
+          "next": "companion_end"
+        },
+        {
+          "id": "companion_end",
+          "text": "Final // Companhia\nA noite nao some, mas pesa menos.\nO console nao vira terapia. Vira testemunha.\nE eu, o criador, aprendo o minimo: seguir.",
+          "route": "companion"
+        },
+        {
+          "id": "quarantine_1",
+          "text": "Eu ativei quarentena.\nO console ficou eficiente.\nA tela ficou limpa.\nE eu fiquei sem desculpa para olhar para dentro.",
+          "route": "quarantine",
+          "mood": "Estado do arquivo: silencio esteril",
+          "next": "quarantine_2"
+        },
+        {
+          "id": "quarantine_2",
+          "text": "SYSTEM> protocolo 9 ativo.\nCREATOR> eu pedi isso?\nSYSTEM> voce pediu com cada linha apagada sem ler.\nA estabilidade sobe. A voz desce.",
+          "route": "quarantine",
+          "unlocks": [
+            "protocol_9"
+          ],
+          "next": "quarantine_end"
+        },
+        {
+          "id": "quarantine_end",
+          "text": "Final // Quarentena\nO sistema fica impecavel.\nTambem fica distante.\nDesta vez, o silencio vence por pontos.\nE ainda assim, o prompt continua esperando.",
+          "route": "quarantine"
+        }
       ]
     }
   ]

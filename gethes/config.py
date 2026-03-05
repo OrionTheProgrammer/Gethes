@@ -20,7 +20,7 @@ class GameConfig:
     graphics: str = "medium"
     language: str = "auto"
     active_slot: int = 1
-    syster_mode: str = "lite"
+    syster_mode: str = "off"
     syster_endpoint: str = ""
     update_repo: str = "OrionTheProgrammer/Gethes"
     auto_update_check: bool = True
