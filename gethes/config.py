@@ -35,6 +35,7 @@ class GameConfig:
     update_repo: str = "OrionTheProgrammer/Gethes"
     auto_update_check: bool = True
     ui_scale: float = 1.0
+    terminal_passthrough: bool = False
     player_name: str = ""
     install_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     cloud_endpoint: str = ""
@@ -124,6 +125,10 @@ class ConfigStore:
         ui_scale = payload.get("ui_scale")
         if isinstance(ui_scale, (int, float)) and 0.7 <= float(ui_scale) <= 2.5:
             cfg.ui_scale = float(ui_scale)
+
+        terminal_passthrough = payload.get("terminal_passthrough")
+        if isinstance(terminal_passthrough, bool):
+            cfg.terminal_passthrough = terminal_passthrough
 
         player_name = payload.get("player_name")
         if isinstance(player_name, str):

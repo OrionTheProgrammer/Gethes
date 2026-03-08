@@ -11,12 +11,12 @@ import pygame
 
 try:
     import pygame_menu
-except Exception:  # pragma: no cover - optional dependency.
+except Exception:  
     pygame_menu = None
 
 try:
     import pytweening
-except Exception:  # pragma: no cover - optional dependency.
+except Exception:  
     pytweening = None
 
 from gethes.icon_pack import IconPack
@@ -2456,7 +2456,16 @@ class ConsoleUI:
             ),
         )
 
-        subtitle = self.brand_sub_font.render("booting", True, self.dim_color)
+        stage_labels = (
+            "linking kernel",
+            "warming shaders",
+            "syncing modules",
+            "routing commands",
+            "handoff to interface",
+        )
+        stage_idx = min(len(stage_labels) - 1, int(progress * len(stage_labels)))
+        subtitle_text = f"booting // {int(progress * 100):3d}% // {stage_labels[stage_idx]}"
+        subtitle = self.brand_sub_font.render(subtitle_text, True, self.dim_color)
         subtitle.set_alpha(int(220 * alpha_ratio))
         self.screen.blit(
             subtitle,

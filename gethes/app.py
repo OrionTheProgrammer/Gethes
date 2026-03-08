@@ -5,7 +5,9 @@ from difflib import get_close_matches
 import json
 import os
 import queue
+import random
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -44,7 +46,7 @@ from gethes.ui import ConsoleUI
 
 try:
     from rapidfuzz import process as rapid_process
-except ImportError:  # pragma: no cover - optional dependency fallback
+except ImportError:  # pragma
     rapid_process = None
 
 
@@ -375,6 +377,11 @@ class GethesApp:
         self.boot_steps: list[str] = []
         self.boot_completed = 0
         self.boot_timer_ms = 0.0
+        self.boot_progress_percent = 0
+        self.boot_stage_queue: list[tuple[bool, str]] = []
+        self.boot_stage_cursor = 0
+        self.boot_recent_activity: list[str] = []
+        self.boot_spinner_frame = 0
         self.idle_count = 0
         self.intro_active = False
         self.last_command = "menu"
@@ -382,6 +389,10 @@ class GethesApp:
         self.syster_last_auto_ts = 0.0
         self.syster_auto_cooldown = 7.0
         self.syster_commands_since_auto = 0
+        self.terminal_passthrough = bool(getattr(self.config, "terminal_passthrough", False))
+        self.terminal_exec_running = False
+        self.terminal_timeout_seconds = 14
+        self.terminal_output_limit = 150
 
         self._migrate_legacy_theme()
         self._sync_theme_visual_profile()
@@ -1089,6 +1100,177 @@ class GethesApp:
 
         self.ui.write(self.tr("app.mods.usage"))
 
+    def _handle_terminal(self, args: list[str], command: str) -> None:
+        action = args[0].lower() if args else "status"
+
+        if action in {"status", "state"}:
+            mode = "ON" if self.terminal_passthrough else "OFF"
+            self.ui.write(
+                self.tr(
+                    "app.terminal.status",
+                    mode=mode,
+                    timeout=self.terminal_timeout_seconds,
+                    limit=self.terminal_output_limit,
+                )
+            )
+            self.ui.write(self.tr("app.terminal.usage"))
+            return
+
+        if action in {"on", "enable"}:
+            if self.terminal_passthrough:
+                self.ui.write(self.tr("app.terminal.already_on"))
+                return
+            self.terminal_passthrough = True
+            self.config.terminal_passthrough = True
+            self._apply_player_identity()
+            self.ui.write(self.tr("app.terminal.on"))
+            self.ui.write(self.tr("app.terminal.prefix_hint"))
+            return
+
+        if action in {"off", "disable"}:
+            if not self.terminal_passthrough:
+                self.ui.write(self.tr("app.terminal.already_off"))
+                return
+            self.terminal_passthrough = False
+            self.config.terminal_passthrough = False
+            self._apply_player_identity()
+            self.ui.write(self.tr("app.terminal.off"))
+            return
+
+        if action in {"run", "exec"}:
+            parts = command.split(None, 2)
+            if len(parts) < 3 or not parts[2].strip():
+                self.ui.write(self.tr("app.terminal.run_usage"))
+                return
+            self._run_terminal_command(parts[2].strip(), from_passthrough=False)
+            return
+
+        self.ui.write(self.tr("app.terminal.usage"))
+
+    def _run_terminal_command(self, shell_command: str, *, from_passthrough: bool) -> None:
+        command = shell_command.strip()
+        if not command:
+            key = "app.terminal.exec_empty" if from_passthrough else "app.terminal.run_usage"
+            self.ui.write(self.tr(key))
+            return
+
+        if self.terminal_exec_running:
+            self.ui.write(self.tr("app.terminal.busy"))
+            return
+
+        self.terminal_exec_running = True
+        self.ui.set_status(self.tr("app.terminal.running"))
+        self.ui.write(self.tr("app.terminal.exec_header", cmd=command), play_sound=False)
+        self.audio.play("tick")
+
+        timeout = self.terminal_timeout_seconds
+
+        def as_text(value: object) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value)
+
+        def worker() -> None:
+            start_ts = time.monotonic()
+            try:
+                proc = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                )
+                elapsed_ms = int((time.monotonic() - start_ts) * 1000)
+                self.update_events.put(
+                    (
+                        "terminal_result",
+                        {
+                            "stdout": proc.stdout or "",
+                            "stderr": proc.stderr or "",
+                            "returncode": int(proc.returncode),
+                            "timed_out": False,
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    )
+                )
+                return
+            except subprocess.TimeoutExpired as exc:
+                elapsed_ms = int((time.monotonic() - start_ts) * 1000)
+                self.update_events.put(
+                    (
+                        "terminal_result",
+                        {
+                            "stdout": as_text(exc.stdout),
+                            "stderr": as_text(exc.stderr),
+                            "returncode": 124,
+                            "timed_out": True,
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    )
+                )
+                return
+            except Exception as exc:
+                self.update_events.put(
+                    (
+                        "terminal_result",
+                        {
+                            "error": str(exc),
+                        },
+                    )
+                )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-terminal-exec").start()
+
+    def _consume_terminal_result(self, payload: dict[str, object]) -> None:
+        self.terminal_exec_running = False
+        self.ui.set_status(self.tr("ui.ready"))
+
+        error = str(payload.get("error", "")).strip()
+        if error:
+            self.ui.write(self.tr("app.terminal.failed", error=error))
+            return
+
+        timed_out = bool(payload.get("timed_out", False))
+        return_code = int(payload.get("returncode", 1) or 1)
+        elapsed_ms = int(payload.get("elapsed_ms", 0) or 0)
+        stdout = str(payload.get("stdout", "") or "")
+        stderr = str(payload.get("stderr", "") or "")
+
+        lines: list[str] = []
+        if stdout.strip():
+            lines.append(self.tr("app.terminal.stdout"))
+            lines.extend(stdout.rstrip().splitlines())
+        if stderr.strip():
+            lines.append(self.tr("app.terminal.stderr"))
+            lines.extend(stderr.rstrip().splitlines())
+
+        if not lines:
+            self.ui.write(self.tr("app.terminal.no_output"), play_sound=False)
+        else:
+            total_lines = len(lines)
+            if total_lines > self.terminal_output_limit:
+                lines = lines[: self.terminal_output_limit]
+                self.ui.write("\n".join(lines), play_sound=False)
+                self.ui.write(
+                    self.tr("app.terminal.truncated", limit=self.terminal_output_limit),
+                    play_sound=False,
+                )
+            else:
+                self.ui.write("\n".join(lines), play_sound=False)
+
+        if timed_out:
+            self.ui.write(self.tr("app.terminal.timeout", seconds=self.terminal_timeout_seconds))
+
+        self.ui.write(self.tr("app.terminal.completed", code=return_code, ms=elapsed_ms))
+        if return_code == 0:
+            self.audio.play("tick")
+        else:
+            self.audio.play("error")
+
     def _on_idle(self) -> None:
         if (
             self.intro_active
@@ -1119,9 +1301,31 @@ class GethesApp:
         if not command:
             return
 
+        force_internal = False
+        if self.terminal_passthrough and command.startswith("/"):
+            command = command[1:].strip()
+            force_internal = True
+            if not command:
+                self.ui.write(self.tr("app.terminal.prefix_hint"))
+                return
+
         try:
             parts = shlex.split(command)
         except ValueError as exc:
+            lowered_command = command.lower()
+            if lowered_command.startswith("sh ") or lowered_command.startswith("shell "):
+                chunks = command.split(None, 1)
+                if len(chunks) > 1 and chunks[1].strip():
+                    self._run_terminal_command(chunks[1].strip(), from_passthrough=False)
+                    return
+            if lowered_command.startswith("terminal run ") or lowered_command.startswith("terminal exec "):
+                chunks = command.split(None, 2)
+                if len(chunks) > 2 and chunks[2].strip():
+                    self._run_terminal_command(chunks[2].strip(), from_passthrough=False)
+                    return
+            if self.terminal_passthrough and not force_internal:
+                self._run_terminal_command(command, from_passthrough=True)
+                return
             self.ui.write(self.tr("app.syntax_error", error=str(exc)))
             return
 
@@ -1191,6 +1395,15 @@ class GethesApp:
 
         if cmd in {"doctor", "diag", "diagnostic"}:
             self._handle_doctor(args)
+            return
+
+        if cmd in {"terminal", "term"}:
+            self._handle_terminal(args, command=command)
+            return
+
+        if cmd in {"sh", "shell"}:
+            shell_command = command.split(None, 1)[1].strip() if len(parts) > 1 else ""
+            self._run_terminal_command(shell_command, from_passthrough=False)
             return
 
         if cmd == "modsreload":
@@ -1295,6 +1508,10 @@ class GethesApp:
             self.ui.request_quit()
             return
 
+        if self.terminal_passthrough and not force_internal:
+            self._run_terminal_command(command, from_passthrough=True)
+            return
+
         suggestion = self._suggest_command_alias(cmd)
         if suggestion:
             self.ui.write(self.tr("app.unknown_suggest", cmd=cmd, suggestion=suggestion))
@@ -1345,6 +1562,10 @@ class GethesApp:
             "doctor",
             "diag",
             "diagnostic",
+            "terminal",
+            "term",
+            "sh",
+            "shell",
             "modsreload",
             "mods",
             "logros",
@@ -3393,6 +3614,10 @@ class GethesApp:
                 self._consume_cloud_presence_done(payload)
                 continue
 
+            if event == "terminal_result":
+                self._consume_terminal_result(payload)
+                continue
+
     def _consume_update_progress(self, payload: dict[str, object]) -> None:
         downloaded = int(payload.get("downloaded", 0) or 0)
         total = int(payload.get("total", 0) or 0)
@@ -3764,12 +3989,13 @@ class GethesApp:
         return name
 
     def _apply_player_identity(self) -> None:
+        prompt_suffix = "$" if self.terminal_passthrough else ">"
         raw_name = self._sanitize_player_name(self.config.player_name)
         if not raw_name:
-            self.ui.set_prompt("Gethes>")
+            self.ui.set_prompt(f"Gethes{prompt_suffix}")
             return
         prompt_token = raw_name.replace(" ", "_")
-        self.ui.set_prompt(f"{prompt_token}>")
+        self.ui.set_prompt(f"{prompt_token}{prompt_suffix}")
 
     def _reload_audio_assets(self) -> None:
         self.audio.initialize(
@@ -3869,9 +4095,35 @@ class GethesApp:
             self.tr("app.boot.step.story"),
             self.tr("app.boot.step.ui"),
         ]
+        fake_steps = [
+            self.tr("app.boot.fake.cache"),
+            self.tr("app.boot.fake.entropy"),
+            self.tr("app.boot.fake.telemetry"),
+            self.tr("app.boot.fake.routing"),
+            self.tr("app.boot.fake.audio"),
+            self.tr("app.boot.fake.shaders"),
+            self.tr("app.boot.fake.session"),
+            self.tr("app.boot.fake.signature"),
+        ]
+        rng = random.Random(time.monotonic_ns())
+        rng.shuffle(fake_steps)
+        self.boot_stage_queue = []
+        fake_cursor = 0
+        for step in self.boot_steps:
+            self.boot_stage_queue.append((False, fake_steps[fake_cursor % len(fake_steps)]))
+            fake_cursor += 1
+            if fake_cursor < len(fake_steps) and rng.random() >= 0.45:
+                self.boot_stage_queue.append((False, fake_steps[fake_cursor % len(fake_steps)]))
+                fake_cursor += 1
+            self.boot_stage_queue.append((True, step))
+
         self.boot_active = True
         self.boot_completed = 0
         self.boot_timer_ms = 0.0
+        self.boot_progress_percent = 0
+        self.boot_stage_cursor = 0
+        self.boot_recent_activity = []
+        self.boot_spinner_frame = 0
         self.ui.set_entry_enabled(False)
         self.ui.set_status(self.tr("app.booting"))
         self.ui.set_screen(
@@ -3879,6 +4131,9 @@ class GethesApp:
                 steps=self.boot_steps,
                 completed=0,
                 current_step=self.tr("app.boot.preparing"),
+                progress_percent=0,
+                background_tasks=self.boot_recent_activity,
+                spinner_index=self.boot_spinner_frame,
             )
         )
 
@@ -3888,14 +4143,32 @@ class GethesApp:
             return
 
         self.boot_timer_ms = 0.0
-        if self.boot_completed < len(self.boot_steps):
-            step = self.boot_steps[self.boot_completed]
-            self.boot_completed += 1
+        if self.boot_stage_cursor < len(self.boot_stage_queue):
+            is_module_step, step = self.boot_stage_queue[self.boot_stage_cursor]
+            self.boot_stage_cursor += 1
+            self.boot_spinner_frame = (self.boot_spinner_frame + 1) % 4
+
+            if is_module_step:
+                self.boot_completed += 1
+                total_steps = max(1, len(self.boot_steps))
+                module_target = int((self.boot_completed / total_steps) * 100)
+                self.boot_progress_percent = max(self.boot_progress_percent, module_target)
+            else:
+                progress_bump = random.randint(2, 6)
+                self.boot_progress_percent = min(96, self.boot_progress_percent + progress_bump)
+
+            self.boot_recent_activity.append(step)
+            if len(self.boot_recent_activity) > 4:
+                self.boot_recent_activity = self.boot_recent_activity[-4:]
+
             self.ui.set_screen(
                 self._boot_text(
                     steps=self.boot_steps,
                     completed=self.boot_completed,
                     current_step=step,
+                    progress_percent=self.boot_progress_percent,
+                    background_tasks=self.boot_recent_activity,
+                    spinner_index=self.boot_spinner_frame,
                 )
             )
             self.audio.play("tick")
@@ -3914,21 +4187,39 @@ class GethesApp:
             "medium": 230,
             "high": 150,
         }
-        return delay_by_graphics.get(self.config.graphics, 230)
+        base_delay = delay_by_graphics.get(self.config.graphics, 230)
+        if self.boot_stage_cursor < len(self.boot_stage_queue):
+            is_module_step, _ = self.boot_stage_queue[self.boot_stage_cursor]
+            if not is_module_step:
+                return max(90, int(base_delay * 0.62))
+        return base_delay
 
-    def _boot_text(self, steps: list[str], completed: int, current_step: str) -> str:
+    def _boot_text(
+        self,
+        steps: list[str],
+        completed: int,
+        current_step: str,
+        progress_percent: int | None = None,
+        background_tasks: list[str] | None = None,
+        spinner_index: int = 0,
+    ) -> str:
         total = len(steps)
         bar_size = 34
-        progress = completed / total if total else 1
+        if progress_percent is None:
+            progress = completed / total if total else 1
+            percent = int(progress * 100)
+        else:
+            percent = max(0, min(100, int(progress_percent)))
+            progress = percent / 100
         filled = int(progress * bar_size)
         bar = ("#" * filled) + ("-" * (bar_size - filled))
-        percent = int(progress * 100)
+        spinner = "|/-\\"[spinner_index % 4]
 
         lines = [
             self.tr("app.boot.title"),
             "==========================================",
             "",
-            f"[{bar}] {percent:3d}%",
+            f"[{bar}] {percent:3d}%  {spinner}",
             self.tr("app.boot.current", step=current_step),
             "",
             self.tr("app.boot.modules"),
@@ -3942,6 +4233,15 @@ class GethesApp:
             else:
                 prefix = "[  ] "
             lines.append(f"{prefix}{step}")
+
+        lines.append("")
+        lines.append(self.tr("app.boot.background"))
+        history = background_tasks or []
+        if history:
+            for item in history[-3:]:
+                lines.append(f" - {item}")
+        else:
+            lines.append(f" - {self.tr('app.boot.fake.fallback')}")
 
         lines.extend(
             [
@@ -4086,6 +4386,8 @@ class GethesApp:
             f"- savegame                 : {self.tr('app.help.savegame')}",
             f"- options / opciones       : {self.tr('app.help.options')}",
             f"- doctor [all|audio|update|ui]: {self.tr('app.help.doctor')}",
+            f"- terminal <status|on|off|run ...>: {self.tr('app.help.terminal')}",
+            f"- sh <comando_sistema>     : {self.tr('app.help.sh')}",
             f"- sound <on|off>           : {self.tr('app.help.sound')}",
             f"- graphics <low|medium|high>: {self.tr('app.help.graphics')}",
             f"- uiscale <0.7-2.5|auto|small|normal|large|huge>: {self.tr('app.help.uiscale')}",
@@ -4138,6 +4440,7 @@ class GethesApp:
                 f"particles {self.config.theme_particles_strength:.2f}",
                 f"- {self.tr('app.options.themes_count'):13}: {len(self.theme_presets)}",
                 f"- {self.tr('app.options.ui_scale'):13}: {self.config.ui_scale:.2f}x",
+                f"- {self.tr('app.options.terminal'):13}: {'ON' if self.terminal_passthrough else 'OFF'}",
                 self.tr(
                     "app.options.ui_scale_runtime",
                     user=f"{ui_user:.2f}",

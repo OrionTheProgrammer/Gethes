@@ -35,6 +35,7 @@ def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     cfg.cloud_endpoint = "https://api.example.com"
     cfg.cloud_api_key = "token_123"
     cfg.cloud_enabled = True
+    cfg.terminal_passthrough = True
     store.save(cfg)
 
     loaded = store.load()
@@ -42,4 +43,5 @@ def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     assert loaded.cloud_endpoint == "https://api.example.com"
     assert loaded.cloud_api_key == "token_123"
     assert loaded.cloud_enabled is True
+    assert loaded.terminal_passthrough is True
     assert len(loaded.install_id) == 32
