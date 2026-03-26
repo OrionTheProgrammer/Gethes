@@ -38,7 +38,7 @@ Presence endpoint:
   "install_id": "8cf2660df3524f7abf0d32eb7c44ef6b",
   "player_name": "Orion",
   "reason": "manual_sync",
-  "version": "0.07",
+  "version": "0.08",
   "timestamp_unix": 1772688000,
   "profile": {
     "slot_id": 1,
