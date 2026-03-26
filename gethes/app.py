@@ -1653,7 +1653,8 @@ class GethesApp:
                 return
 
             if self.syster_enabled and self.syster.mode == "local":
-                if self._emit_syster_response(command, source="player_freeform"):
+                core_ready, _core_state = self.syster.get_ollama_status(force_probe=False)
+                if core_ready and self._emit_syster_response(command, source="player_freeform"):
                     return
 
             self.ui.write(self.tr("app.unknown", cmd=cmd))
@@ -2086,7 +2087,7 @@ class GethesApp:
     def _show_syster_core_status(self, force_probe: bool) -> None:
         status = self.syster.core_runtime_status(force_probe=force_probe)
         ok = bool(status.get("online", False))
-        reason = str(status.get("state", "unknown"))
+        reason = self.syster._humanize_core_reason(str(status.get("state", "unknown")))
         runtime_path = str(status.get("runtime_path", "") or "")
         model_ready = bool(status.get("model_ready", False))
         cuda_available = bool(status.get("cuda_available", False))
@@ -2114,6 +2115,22 @@ class GethesApp:
                 model_ready=("YES" if model_ready else "NO"),
             )
         )
+        runtime_bootstrap_in_progress = bool(status.get("runtime_bootstrap_in_progress", False))
+        runtime_bootstrap_error = str(status.get("runtime_bootstrap_error", "") or "")
+        if runtime_bootstrap_in_progress:
+            self.ui.write(
+                self.tr(
+                    "app.syster.ollama.runtime_bootstrap",
+                    state="downloading",
+                )
+            )
+        elif runtime_bootstrap_error:
+            self.ui.write(
+                self.tr(
+                    "app.syster.ollama.runtime_bootstrap_error",
+                    error=runtime_bootstrap_error,
+                )
+            )
         self.ui.write(
             self.tr(
                 "app.syster.ollama.tuning",

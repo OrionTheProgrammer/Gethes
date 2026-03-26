@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import unicodedata
+import zipfile
 from typing import Callable
 from urllib import error, request
 
@@ -39,6 +40,9 @@ except ImportError:  # pragma: no cover - optional dependency fallback
 
 SYSTER_MODES = {"local"}
 SYSTER_REQUIRED_MODEL = "mistral"
+SYSTER_OLLAMA_RUNTIME_WINDOWS_URL = (
+    "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
+)
 
 
 FOLLOW_UP_TOKENS = {
@@ -236,6 +240,14 @@ class SysterAssistant:
         self._ollama_pull_in_progress = False
         self._ollama_model_ready = False
         self._ollama_model_check_ts = 0.0
+        self._runtime_bootstrap_lock = threading.Lock()
+        self._runtime_bootstrap_in_progress = False
+        self._runtime_bootstrap_last_attempt = 0.0
+        self._runtime_bootstrap_last_error = ""
+        self._runtime_bootstrap_url = (
+            os.getenv("GETHES_OLLAMA_RUNTIME_URL", SYSTER_OLLAMA_RUNTIME_WINDOWS_URL).strip()
+            or SYSTER_OLLAMA_RUNTIME_WINDOWS_URL
+        )
 
         timeout_raw = os.getenv("GETHES_SYSTER_TIMEOUT", "").strip()
         if timeout_raw:
@@ -330,6 +342,7 @@ class SysterAssistant:
             return
 
         def worker() -> None:
+            self._start_runtime_bootstrap_async()
             self._probe_ollama(force=True)
             self._check_ollama_model_ready(force=True)
 
@@ -363,6 +376,8 @@ class SysterAssistant:
             "kv_cache_type": self.ollama_kv_cache_type,
             "keep_alive": self.ollama_keep_alive,
             "cuda_available": cuda_available,
+            "runtime_bootstrap_in_progress": self._runtime_bootstrap_in_progress,
+            "runtime_bootstrap_error": self._runtime_bootstrap_last_error,
         }
 
     def optimize_for_cuda(self, profile: str = "balanced") -> dict[str, object]:
@@ -522,6 +537,18 @@ class SysterAssistant:
             return follow
 
         intent = self._detect_intent(normalized)
+        if intent == "unknown" and self.ollama_enabled:
+            ok, reason = self._probe_ollama(force=True)
+            if ok:
+                reason = "response_empty"
+            self.last_intent = "core_unavailable"
+            self.memory.append((normalized, "core_unavailable"))
+            return tr(
+                "app.syster.reply.core_unavailable",
+                model=self.ollama_model,
+                reason=self._humanize_core_reason(reason),
+            )
+
         self.last_intent = intent
         self.memory.append((normalized, intent))
 
@@ -761,6 +788,17 @@ class SysterAssistant:
             self._ensure_ollama_server_running()
             ok, reason = self._probe_ollama_http()
 
+        if not ok:
+            runtime_exe = self._resolve_ollama_executable()
+            if not runtime_exe:
+                self._start_runtime_bootstrap_async()
+                if self._runtime_bootstrap_in_progress:
+                    reason = "runtime_downloading"
+                elif self._runtime_bootstrap_last_error:
+                    reason = "runtime_bootstrap_failed"
+                else:
+                    reason = "runtime_missing"
+
         if ok:
             model_ok, model_reason = self._check_ollama_model_ready(force=force)
             if not model_ok:
@@ -812,6 +850,8 @@ class SysterAssistant:
         if self.package_dir is not None:
             candidates.append(self.package_dir / "vendor" / "syster_core" / "ollama" / "ollama.exe")
             candidates.append(self.package_dir / "vendor" / "ollama" / "ollama.exe")
+        if self.storage_dir is not None:
+            candidates.append(self.storage_dir / "syster_runtime" / "ollama" / "ollama.exe")
         local_appdata = os.getenv("LOCALAPPDATA", "")
         if local_appdata:
             candidates.append(Path(local_appdata) / "Programs" / "Ollama" / "ollama.exe")
@@ -849,6 +889,83 @@ class SysterAssistant:
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 
+    def _start_runtime_bootstrap_async(self) -> None:
+        if os.name != "nt":
+            return
+        if self.storage_dir is None:
+            return
+        if self._resolve_ollama_executable():
+            return
+
+        now = time.monotonic()
+        if (now - self._runtime_bootstrap_last_attempt) < 20.0:
+            return
+
+        with self._runtime_bootstrap_lock:
+            now_locked = time.monotonic()
+            if self._runtime_bootstrap_in_progress:
+                return
+            if (now_locked - self._runtime_bootstrap_last_attempt) < 20.0:
+                return
+            self._runtime_bootstrap_last_attempt = now_locked
+            self._runtime_bootstrap_in_progress = True
+            self._runtime_bootstrap_last_error = ""
+
+        def worker() -> None:
+            try:
+                runtime_root = self.storage_dir / "syster_runtime"
+                downloads_dir = runtime_root / "downloads"
+                extract_dir = runtime_root / "_extract"
+                runtime_dir = runtime_root / "ollama"
+                archive_path = downloads_dir / "ollama-windows-amd64.zip"
+
+                downloads_dir.mkdir(parents=True, exist_ok=True)
+                if extract_dir.exists():
+                    shutil.rmtree(extract_dir, ignore_errors=True)
+                extract_dir.mkdir(parents=True, exist_ok=True)
+
+                req = request.Request(
+                    self._runtime_bootstrap_url,
+                    headers={
+                        "User-Agent": f"Gethes-Syster/{__version__}",
+                        "Accept": "*/*",
+                    },
+                    method="GET",
+                )
+                with request.urlopen(req, timeout=150) as response, archive_path.open("wb") as target:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        target.write(chunk)
+
+                with zipfile.ZipFile(archive_path) as zipped:
+                    zipped.extractall(extract_dir)
+
+                found_exe: Path | None = None
+                for candidate in extract_dir.rglob("ollama.exe"):
+                    if candidate.is_file():
+                        found_exe = candidate
+                        break
+                if found_exe is None:
+                    raise RuntimeError("runtime_archive_missing_ollama_exe")
+
+                source_root = found_exe.parent
+                if runtime_dir.exists():
+                    shutil.rmtree(runtime_dir, ignore_errors=True)
+                shutil.copytree(source_root, runtime_dir)
+
+                self.ollama_runtime_path = str(runtime_dir / "ollama.exe")
+                self._ollama_exec_cache = ""
+                self._runtime_bootstrap_last_error = ""
+            except Exception as exc:
+                self._runtime_bootstrap_last_error = str(exc)[:220]
+            finally:
+                with self._runtime_bootstrap_lock:
+                    self._runtime_bootstrap_in_progress = False
+
+        threading.Thread(target=worker, daemon=True, name="syster-ai-runtime-bootstrap").start()
+
     def _ollama_runtime_env(self) -> dict[str, str]:
         env = dict(os.environ)
         env["OLLAMA_HOST"] = self.ollama_host
@@ -872,6 +989,7 @@ class SysterAssistant:
             self._ollama_last_launch_attempt = now_locked
             exe = self._resolve_ollama_executable()
             if not exe:
+                self._start_runtime_bootstrap_async()
                 return
             flags = 0
             flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
@@ -1296,3 +1414,24 @@ class SysterAssistant:
         decomposed = unicodedata.normalize("NFD", raw)
         clean = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
         return " ".join(clean.split())
+
+    @staticmethod
+    def _humanize_core_reason(reason: str) -> str:
+        token = (reason or "").strip().lower()
+        labels = {
+            "online": "online",
+            "unreachable": "runtime_offline",
+            "missing_host": "host_missing",
+            "disabled": "disabled",
+            "model_downloading": "model_downloading",
+            "model_missing": "model_missing",
+            "runtime_missing": "runtime_missing",
+            "runtime_downloading": "runtime_downloading",
+            "runtime_bootstrap_failed": "runtime_bootstrap_failed",
+            "response_empty": "empty_response",
+        }
+        if token in labels:
+            return labels[token]
+        if token.startswith("http_"):
+            return token
+        return token or "unknown"

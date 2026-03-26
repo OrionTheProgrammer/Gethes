@@ -58,6 +58,21 @@ def test_reply_falls_back_when_ollama_unavailable(monkeypatch) -> None:
     assert reply == "app.syster.reply.help"
 
 
+def test_reply_unknown_reports_core_unavailable_when_ollama_is_down(monkeypatch) -> None:
+    syster = SysterAssistant(
+        mode="local",
+        ollama_enabled=True,
+        ollama_model="mistral",
+        ollama_host="http://127.0.0.1:11434",
+    )
+    ctx = SysterContext(last_command="menu")
+
+    monkeypatch.setattr(syster, "_probe_ollama", lambda force=False: (False, "runtime_missing"))
+
+    reply = syster.reply("qzxw vbnm", _tr, ctx)
+    assert reply == "app.syster.reply.core_unavailable"
+
+
 def test_extract_control_command_parses_marker() -> None:
     raw = "[[sys:theme deepsea]]\nPerfecto, aplicando una atmosfera fria."
     command, text = SysterAssistant.extract_control_command(raw)
