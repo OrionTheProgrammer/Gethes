@@ -41,6 +41,7 @@ from gethes.schema_validation import validate_theme_payload
 from gethes.save_system import SaveManager
 from gethes.story.story_mode import StoryMode
 from gethes.syster import SysterAssistant, SysterContext
+from gethes.syster_memory import SysterKnowledgeStore
 from gethes.updater import UpdateInfo, UpdateManager
 from gethes.ui import ConsoleUI
 
@@ -286,6 +287,8 @@ class GethesApp:
         self.theme_mods_dir = self.mods_dir / "themes"
         self.story_mods_dir = self.mods_dir / "story"
         self.user_sfx_dir = self.storage_dir / "sfx"
+        self.syster_data_dir = self.storage_dir / "syster"
+        self.syster_store = SysterKnowledgeStore(self.syster_data_dir)
 
         self.config_store = ConfigStore(self.storage_dir / "gethes_config.json")
         self.config = self.config_store.load()
@@ -353,10 +356,20 @@ class GethesApp:
         self.syster = SysterAssistant(
             mode=self.config.syster_mode,
             remote_endpoint=self.config.syster_endpoint or None,
+            ollama_enabled=self.config.syster_ollama_enabled,
+            ollama_model=self.config.syster_ollama_model,
+            ollama_host=self.config.syster_ollama_host,
+            ollama_timeout=self.config.syster_ollama_timeout,
+            package_dir=self.package_dir,
+            storage_dir=self.storage_dir,
+            knowledge_store=self.syster_store,
         )
         if not self.syster_enabled:
             self.syster.set_mode("off")
             self.syster.set_remote_endpoint(None)
+            self.syster.set_ollama_enabled(False)
+        else:
+            self.syster.warmup_local_ai()
         self.config.syster_mode = self.syster.mode
         if not self.syster_enabled:
             self.config.syster_endpoint = ""
@@ -389,6 +402,9 @@ class GethesApp:
         self.syster_last_auto_ts = 0.0
         self.syster_auto_cooldown = 7.0
         self.syster_commands_since_auto = 0
+        self.syster_control_running = False
+        self.syster_last_prompt = ""
+        self.syster_last_reply = ""
         self.terminal_passthrough = bool(getattr(self.config, "terminal_passthrough", False))
         self.terminal_exec_running = False
         self.terminal_timeout_seconds = 14
@@ -530,6 +546,7 @@ class GethesApp:
             return
         self.bump_stat("story_completed_runs", 1)
         self._unlock_achievement("story_complete")
+        self._record_syster_event("story_finished", {"completed": True})
         self._save_current_slot(user_feedback=False)
 
     def on_snake_food_eaten(self, score: int, level: int, length: int) -> None:
@@ -593,6 +610,16 @@ class GethesApp:
                     )
         if self.daily_active_game == "snake":
             self._clear_daily_session()
+        self._record_syster_event(
+            "snake_finished",
+            {
+                "score": score,
+                "level": level,
+                "foods": foods_eaten,
+                "game_over": game_over,
+                "user_exit": user_exit,
+            },
+        )
         self._save_current_slot(user_feedback=False)
 
     def on_hangman_finished(self, won: bool, mode: str, errors: int, hint_used: bool) -> None:
@@ -605,6 +632,10 @@ class GethesApp:
         if hint_used:
             self.bump_stat("hangman_hints", 1)
         self.set_stat_max("hangman_best_errors_left", max(0, 6 - errors))
+        self._record_syster_event(
+            "hangman_finished",
+            {"won": won, "mode": mode, "errors": errors, "hint_used": hint_used},
+        )
         self._save_current_slot(user_feedback=False)
 
     def on_tictactoe_finished(self, won: bool, draw: bool) -> None:
@@ -616,6 +647,7 @@ class GethesApp:
             self.bump_stat("ttt_draws", 1)
         else:
             self.bump_stat("ttt_losses", 1)
+        self._record_syster_event("ttt_finished", {"won": won, "draw": draw})
         self._save_current_slot(user_feedback=False)
 
     def on_codebreaker_finished(self, won: bool, attempts_used: int, hint_used: bool) -> None:
@@ -628,6 +660,10 @@ class GethesApp:
                 self.set_stat("codebreaker_best_attempts", attempts_used)
         if hint_used:
             self.bump_stat("codebreaker_hints", 1)
+        self._record_syster_event(
+            "codebreaker_finished",
+            {"won": won, "attempts_used": attempts_used, "hint_used": hint_used},
+        )
         self._save_current_slot(user_feedback=False)
 
     def on_physics_finished(self, score: int, won: bool, cancelled: bool) -> None:
@@ -637,6 +673,7 @@ class GethesApp:
         if won:
             self.bump_stat("physics_wins", 1)
         self.set_stat_max("physics_best_score", score)
+        self._record_syster_event("physics_finished", {"score": score, "won": won})
         self._save_current_slot(user_feedback=False)
 
     def on_roguelike_finished(
@@ -711,6 +748,10 @@ class GethesApp:
                     )
         if self.daily_active_game == "rogue":
             self._clear_daily_session()
+        self._record_syster_event(
+            "roguelike_finished",
+            {"won": won, "depth": depth, "kills": kills, "gold": gold},
+        )
         self._save_current_slot(user_feedback=False)
 
     def _migrate_legacy_theme(self) -> None:
@@ -1327,13 +1368,16 @@ class GethesApp:
                 self._run_terminal_command(command, from_passthrough=True)
                 return
             self.ui.write(self.tr("app.syntax_error", error=str(exc)))
+            self._record_syster_command(command, outcome="syntax_error")
             return
 
         cmd = parts[0].lower()
         args = parts[1:]
+        self._record_syster_command(command, outcome="accepted")
         if cmd != "syster":
             self.last_command = cmd
-            self._queue_syster_auto_from_command(cmd)
+            if not self.syster_control_running:
+                self._queue_syster_auto_from_command(cmd)
 
         if cmd in {"help", "ayuda", "ajuda", "?"}:
             self.ui.write(self._help_text())
@@ -1515,8 +1559,13 @@ class GethesApp:
         suggestion = self._suggest_command_alias(cmd)
         if suggestion:
             self.ui.write(self.tr("app.unknown_suggest", cmd=cmd, suggestion=suggestion))
-        else:
-            self.ui.write(self.tr("app.unknown", cmd=cmd))
+            return
+
+        if self.syster_enabled and self.syster.mode != "off":
+            if self._emit_syster_response(command, source="player_freeform"):
+                return
+
+        self.ui.write(self.tr("app.unknown", cmd=cmd))
 
     @staticmethod
     def _known_command_aliases() -> set[str]:
@@ -1706,19 +1755,157 @@ class GethesApp:
             return False
 
         prompt = self._syster_auto_prompt(trigger)
-        reply = self.syster.reply(
-            prompt,
-            lambda key, **kwargs: self.tr(key, **kwargs),
-            context=self._build_syster_context(),
-        )
-        if not reply.strip():
+        if not self._emit_syster_response(prompt, source="auto"):
             return False
-
-        self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
-        self.ui.write(reply)
-        self.audio.play("message")
         self.syster_last_auto_ts = now
         return True
+
+    def _emit_syster_response(self, prompt: str, *, source: str) -> bool:
+        context = self._build_syster_context()
+        raw_reply = self.syster.reply(
+            prompt,
+            lambda key, **kwargs: self.tr(key, **kwargs),
+            context=context,
+        )
+        if not raw_reply.strip():
+            return False
+
+        control_command, cleaned_reply = self.syster.extract_control_command(raw_reply)
+        visible_reply = cleaned_reply.strip()
+        if not visible_reply and not control_command:
+            visible_reply = raw_reply.strip()
+        if source == "player":
+            normalized_prompt = " ".join(prompt.split())
+            if normalized_prompt:
+                self.syster_last_prompt = normalized_prompt[:400]
+            if visible_reply:
+                self.syster_last_reply = visible_reply[:800]
+        self.syster.observe_exchange(
+            prompt=prompt,
+            reply=visible_reply,
+            context=context,
+            source=source,
+            intent=self.syster.last_intent,
+        )
+
+        if visible_reply:
+            self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
+            self.ui.write(visible_reply)
+            self.audio.play("message")
+
+        if control_command:
+            self._apply_syster_control_command(control_command, source=source)
+
+        return bool(visible_reply or control_command)
+
+    def _is_syster_control_allowed(self, command: str) -> bool:
+        token = " ".join(command.lower().split())
+        if not token:
+            return False
+
+        if any(mark in token for mark in ("\n", "\r", "&&", "||", ";", "|", ">", "<")):
+            return False
+
+        blocked_tokens = (
+            "terminal",
+            "sh",
+            "shell",
+            "update",
+            "cloud",
+            "mods",
+            "sfx",
+            "syster",
+            "exit",
+            "quit",
+            "salir",
+            "sair",
+        )
+        if token in blocked_tokens:
+            return False
+        if any(token.startswith(f"{prefix} ") for prefix in blocked_tokens):
+            return False
+
+        allowed_exact = {
+            "help",
+            "?",
+            "clear",
+            "menu",
+            "inicio",
+            "home",
+            "historia",
+            "story",
+            "logros",
+            "achievements",
+            "slots",
+            "savegame",
+            "snake",
+            "ahorcado1",
+            "hangman1",
+            "ahorcado2",
+            "hangman2",
+            "gato",
+            "tictactoe",
+            "codigo",
+            "codebreaker",
+            "physics",
+            "roguelike",
+            "rogue",
+            "dungeon",
+            "daily status",
+            "options",
+            "opciones",
+            "opcoes",
+            "theme list",
+        }
+        if token in allowed_exact:
+            return True
+
+        allowed_prefixes = (
+            "slot ",
+            "slotname ",
+            "user ",
+            "sound ",
+            "graphics ",
+            "uiscale ",
+            "ui-scale ",
+            "theme ",
+            "bg ",
+            "fg ",
+            "font ",
+            "lang ",
+            "language ",
+            "idioma ",
+            "lingua ",
+            "daily ",
+        )
+        return any(token.startswith(prefix) for prefix in allowed_prefixes)
+
+    def _apply_syster_control_command(self, command: str, *, source: str) -> None:
+        if self.syster_control_running:
+            return
+
+        normalized = " ".join(command.split())
+        if not normalized:
+            return
+
+        if not self._is_syster_control_allowed(normalized):
+            self._record_syster_event(
+                "syster_control_blocked",
+                {"command": normalized, "source": source},
+            )
+            self.ui.write(self.tr("app.syster.control.blocked", cmd=normalized))
+            return
+
+        self.syster_control_running = True
+        try:
+            self.ui.write(self.tr("app.syster.control.exec", cmd=normalized), play_sound=False)
+            self._record_syster_event(
+                "syster_control_exec",
+                {"command": normalized, "source": source},
+            )
+            self._on_command(normalized)
+        finally:
+            self.syster_control_running = False
 
     def _handle_syster(self, args: list[str]) -> None:
         if not self.syster_enabled:
@@ -1726,6 +1913,7 @@ class GethesApp:
             return
 
         if not args:
+            context = self._build_syster_context()
             self.ui.write(
                 self.tr(
                     "app.syster.status",
@@ -1738,10 +1926,20 @@ class GethesApp:
                 else self.tr("app.syster.remote.off")
             )
             self.ui.write(self.tr("app.syster.remote_status", status=remote_status))
+            self._show_syster_core_status(force_probe=True)
             summary = self.syster.briefing(
                 lambda key, **kwargs: self.tr(key, **kwargs),
-                self._build_syster_context(),
+                context,
             )
+            self.syster.observe_exchange(
+                prompt="status",
+                reply=summary,
+                context=context,
+                source="player",
+                intent="briefing",
+            )
+            self.syster_last_prompt = "status"
+            self.syster_last_reply = summary[:800]
             self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
             self.ui.write(summary)
             self.ui.write(self.tr("app.syster.usage"))
@@ -1749,10 +1947,20 @@ class GethesApp:
 
         action = args[0].lower()
         if action in {"brief", "briefing", "recap"}:
+            context = self._build_syster_context()
             summary = self.syster.briefing(
                 lambda key, **kwargs: self.tr(key, **kwargs),
-                self._build_syster_context(),
+                context,
             )
+            self.syster.observe_exchange(
+                prompt="briefing",
+                reply=summary,
+                context=context,
+                source="player",
+                intent="briefing",
+            )
+            self.syster_last_prompt = "briefing"
+            self.syster_last_reply = summary[:800]
             self.ui.write(self.tr("app.syster.prefix"))
             self.ui.write(summary)
             self.audio.play("message")
@@ -1770,8 +1978,16 @@ class GethesApp:
             self.config.syster_mode = mode
             self._save_config()
             self.ui.write(self.tr("app.syster.mode_set", mode=mode))
-            if mode == "hybrid" and not self.syster.has_remote_endpoint():
+            if mode == "hybrid" and not self.syster.has_remote_endpoint() and not self.syster.ollama_enabled:
                 self.ui.write(self.tr("app.syster.hybrid_fallback"))
+            return
+
+        if action == "core":
+            self._handle_syster_core(args[1:])
+            return
+
+        if action == "train":
+            self._handle_syster_train(args[1:])
             return
 
         if action == "endpoint":
@@ -1811,16 +2027,323 @@ class GethesApp:
         else:
             prompt = " ".join(args)
 
-        reply = self.syster.reply(
-            prompt,
-            lambda key, **kwargs: self.tr(key, **kwargs),
-            context=self._build_syster_context(),
+        self._emit_syster_response(prompt, source="player")
+
+    def _show_syster_core_status(self, force_probe: bool) -> None:
+        status = self.syster.core_runtime_status(force_probe=force_probe)
+        ok = bool(status.get("online", False))
+        reason = str(status.get("state", "unknown"))
+        runtime_path = str(status.get("runtime_path", "") or "")
+        model_ready = bool(status.get("model_ready", False))
+        cuda_available = bool(status.get("cuda_available", False))
+        if not self.syster.ollama_enabled:
+            state = self.tr("app.syster.ollama.state.disabled")
+        elif ok:
+            state = self.tr("app.syster.ollama.state.online")
+        else:
+            state = self.tr("app.syster.ollama.state.offline")
+        self.ui.write(
+            self.tr(
+                "app.syster.ollama.status",
+                enabled=("ON" if self.syster.ollama_enabled else "OFF"),
+                state=state,
+                model=self.syster.ollama_model,
+                host=(self.syster.ollama_host or "-"),
+                reason=reason,
+            )
         )
-        self.ui.write(self.tr("app.syster.prefix"))
-        self.ui.write(reply)
-        self.audio.play("message")
+        self.ui.write(
+            self.tr(
+                "app.syster.ollama.runtime",
+                runtime=(runtime_path or "-"),
+                models=str(status.get("models_dir", "-")),
+                model_ready=("YES" if model_ready else "NO"),
+            )
+        )
+        self.ui.write(
+            self.tr(
+                "app.syster.ollama.tuning",
+                context=str(status.get("context_length", self.syster.ollama_context_length)),
+                flash=("ON" if bool(status.get("flash_attention", False)) else "OFF"),
+                kv=str(status.get("kv_cache_type", self.syster.ollama_kv_cache_type)),
+                keep_alive=str(status.get("keep_alive", self.syster.ollama_keep_alive)),
+                cuda=("ON" if cuda_available else "OFF"),
+            )
+        )
+
+    def _handle_syster_core(self, args: list[str]) -> None:
+        action = args[0].lower() if args else "status"
+
+        if action in {"status", "state"}:
+            self._show_syster_core_status(force_probe=True)
+            self.ui.write(self.tr("app.syster.ollama.usage"))
+            return
+
+        if action in {"on", "enable"}:
+            self.syster.set_ollama_enabled(True)
+            self.config.syster_ollama_enabled = True
+            if self.syster.mode == "off":
+                self.syster.set_mode("hybrid")
+                self.config.syster_mode = self.syster.mode
+            self._save_config()
+            self.ui.write(self.tr("app.syster.ollama.on"))
+            self._show_syster_core_status(force_probe=True)
+            return
+
+        if action in {"off", "disable"}:
+            self.syster.set_ollama_enabled(False)
+            self.config.syster_ollama_enabled = False
+            self._save_config()
+            self.ui.write(self.tr("app.syster.ollama.off"))
+            return
+
+        if action == "model":
+            if len(args) == 1:
+                self.ui.write(
+                    self.tr("app.syster.ollama.model_status", model=self.syster.ollama_model)
+                )
+                self.ui.write(self.tr("app.syster.ollama.model_usage"))
+                return
+            model = " ".join(args[1:]).strip()
+            if not model:
+                self.ui.write(self.tr("app.syster.ollama.model_usage"))
+                return
+            self.syster.set_ollama_model(model)
+            self.config.syster_ollama_model = self.syster.ollama_model
+            self._save_config()
+            self.ui.write(self.tr("app.syster.ollama.model_set", model=self.syster.ollama_model))
+            return
+
+        if action == "host":
+            if len(args) == 1:
+                self.ui.write(self.tr("app.syster.ollama.host_status", host=self.syster.ollama_host or "-"))
+                self.ui.write(self.tr("app.syster.ollama.host_usage"))
+                return
+            host = " ".join(args[1:]).strip()
+            if host.lower() in {"off", "none", "clear", "reset"}:
+                self.syster.set_ollama_host("")
+                self.config.syster_ollama_host = ""
+                self._save_config()
+                self.ui.write(self.tr("app.syster.ollama.host_cleared"))
+                return
+            if not host:
+                self.ui.write(self.tr("app.syster.ollama.host_usage"))
+                return
+            self.syster.set_ollama_host(host)
+            if not self.syster.ollama_host.startswith(("http://", "https://")):
+                self.ui.write(self.tr("app.syster.ollama.host_invalid"))
+                return
+            self.config.syster_ollama_host = self.syster.ollama_host
+            self._save_config()
+            self.ui.write(self.tr("app.syster.ollama.host_set", host=self.syster.ollama_host))
+            return
+
+        if action == "timeout":
+            if len(args) == 1:
+                self.ui.write(
+                    self.tr(
+                        "app.syster.ollama.timeout_status",
+                        value=f"{self.syster.ollama_timeout:.1f}",
+                    )
+                )
+                self.ui.write(self.tr("app.syster.ollama.timeout_usage"))
+                return
+            token = args[1].strip().lower().replace("s", "")
+            try:
+                value = float(token)
+            except ValueError:
+                self.ui.write(self.tr("app.syster.ollama.timeout_invalid"))
+                return
+            if value < 1.0 or value > 120.0:
+                self.ui.write(self.tr("app.syster.ollama.timeout_invalid"))
+                return
+            self.syster.set_ollama_timeout(value)
+            self.config.syster_ollama_timeout = self.syster.ollama_timeout
+            self._save_config()
+            self.ui.write(
+                self.tr(
+                    "app.syster.ollama.timeout_set",
+                    value=f"{self.syster.ollama_timeout:.1f}",
+                )
+            )
+            return
+
+        if action in {"optimize", "cuda", "gpu"}:
+            profile = args[1].strip().lower() if len(args) > 1 else "balanced"
+            result = self.syster.optimize_for_cuda(profile)
+            self.ui.write(
+                self.tr(
+                    "app.syster.ollama.optimize",
+                    profile=str(result.get("profile", "balanced")),
+                    context=str(result.get("context_length", self.syster.ollama_context_length)),
+                    kv=str(result.get("kv_cache_type", self.syster.ollama_kv_cache_type)),
+                    flash=("ON" if bool(result.get("flash_attention", True)) else "OFF"),
+                    keep_alive=str(result.get("keep_alive", self.syster.ollama_keep_alive)),
+                )
+            )
+            self.syster.warmup_local_ai()
+            self._show_syster_core_status(force_probe=True)
+            return
+
+        if action in {"warmup", "wake"}:
+            self.syster.warmup_local_ai()
+            self.ui.write(self.tr("app.syster.ollama.warmup"))
+            self._show_syster_core_status(force_probe=True)
+            return
+
+        self.ui.write(self.tr("app.syster.ollama.usage"))
+
+    def _handle_syster_train(self, args: list[str]) -> None:
+        action = args[0].lower() if args else "status"
+
+        if action in {"status", "state"}:
+            overview = self.syster_store.get_training_overview()
+            self.ui.write(
+                self.tr(
+                    "app.syster.train.status",
+                    interactions=overview["interactions"],
+                    feedback=overview["feedback"],
+                    memory=overview["long_memory"],
+                    events=overview["events"],
+                    commands=overview["commands"],
+                    snapshots=overview["snapshots"],
+                )
+            )
+            if self.syster_last_prompt and self.syster_last_reply:
+                self.ui.write(self.tr("app.syster.train.last_ready"))
+            else:
+                self.ui.write(self.tr("app.syster.train.last_missing"))
+            return
+
+        if action == "memory":
+            items = self.syster_store.get_long_memory_entries(limit=6, min_weight=0.0)
+            if not items:
+                self.ui.write(self.tr("app.syster.train.memory_empty"))
+                return
+            self.ui.write(self.tr("app.syster.train.memory_title"))
+            for row in items:
+                self.ui.write(
+                    self.tr(
+                        "app.syster.train.memory_item",
+                        key=row.get("key", "-"),
+                        value=str(row.get("value", ""))[:120],
+                        weight=f"{float(row.get('weight', 0.0)):.2f}",
+                    )
+                )
+            return
+
+        if action == "remember":
+            if len(args) < 3:
+                self.ui.write(self.tr("app.syster.train.remember_usage"))
+                return
+            raw_key = args[1].strip().lower()
+            key = "".join(ch for ch in raw_key if ch.isalnum() or ch in {"_", "-", "."})
+            if not key:
+                self.ui.write(self.tr("app.syster.train.remember_usage"))
+                return
+            value = " ".join(args[2:]).strip()
+            if not value:
+                self.ui.write(self.tr("app.syster.train.remember_usage"))
+                return
+            self.syster_store.upsert_long_memory(
+                key[:120],
+                value[:900],
+                weight=2.4,
+                source="manual",
+            )
+            self._record_syster_event("syster_memory_remember", {"key": key[:120]})
+            self.ui.write(self.tr("app.syster.train.remember_saved", key=key[:120]))
+            return
+
+        if action == "forget":
+            if len(args) != 2:
+                self.ui.write(self.tr("app.syster.train.forget_usage"))
+                return
+            raw_key = args[1].strip().lower()
+            key = "".join(ch for ch in raw_key if ch.isalnum() or ch in {"_", "-", "."})
+            if not key:
+                self.ui.write(self.tr("app.syster.train.forget_usage"))
+                return
+            removed = self.syster_store.delete_long_memory(key[:120])
+            if removed:
+                self._record_syster_event("syster_memory_forget", {"key": key[:120]})
+                self.ui.write(self.tr("app.syster.train.forget_done", key=key[:120]))
+            else:
+                self.ui.write(self.tr("app.syster.train.forget_missing", key=key[:120]))
+            return
+
+        if not self.syster_last_prompt or not self.syster_last_reply:
+            self.ui.write(self.tr("app.syster.train.no_exchange"))
+            return
+
+        score = 0.0
+        notes = ""
+        if action in {"up", "good", "like", "+"}:
+            score = 1.0
+            notes = " ".join(args[1:]).strip() or "manual_positive"
+        elif action in {"down", "bad", "dislike", "-"}:
+            score = 0.0
+            notes = " ".join(args[1:]).strip() or "manual_negative"
+        elif action == "score":
+            if len(args) < 2:
+                self.ui.write(self.tr("app.syster.train.usage"))
+                return
+            token = args[1].strip().replace(",", ".")
+            try:
+                score = float(token)
+            except ValueError:
+                self.ui.write(self.tr("app.syster.train.invalid"))
+                return
+            if score < 0.0 or score > 1.0:
+                self.ui.write(self.tr("app.syster.train.invalid"))
+                return
+            notes = " ".join(args[2:]).strip() or "manual_score"
+        else:
+            self.ui.write(self.tr("app.syster.train.usage"))
+            return
+
+        self.syster.record_feedback(
+            prompt=self.syster_last_prompt,
+            reply=self.syster_last_reply,
+            score=score,
+            notes=notes,
+        )
+        self._record_syster_event(
+            "syster_feedback",
+            {"score": score, "notes": notes[:140]},
+        )
+        self.ui.write(self.tr("app.syster.train.saved", score=f"{score:.2f}"))
 
     def _build_syster_context(self) -> SysterContext:
+        digest = self.syster_store.get_context_digest(commands_limit=8, events_limit=8)
+        recent_commands_raw = digest.get("recent_commands", [])
+        recent_events_raw = digest.get("recent_events", [])
+        recent_commands = (
+            [str(item)[:160] for item in recent_commands_raw if isinstance(item, str)]
+            if isinstance(recent_commands_raw, list)
+            else []
+        )
+        recent_events = (
+            [str(item)[:120] for item in recent_events_raw if isinstance(item, str)]
+            if isinstance(recent_events_raw, list)
+            else []
+        )
+        best_scores = {
+            "snake_best_score": self.get_stat("snake_best_score"),
+            "snake_best_level": self.get_stat("snake_best_level"),
+            "rogue_best_depth": self.get_stat("rogue_best_depth"),
+            "rogue_best_gold": self.get_stat("rogue_best_gold"),
+            "rogue_best_kills": self.get_stat("rogue_best_kills"),
+            "hangman_wins": self.get_stat("hangman_wins"),
+            "codebreaker_wins": self.get_stat("codebreaker_wins"),
+            "physics_best_score": self.get_stat("physics_best_score"),
+        }
+        unlocked_themes = [
+            name
+            for name, preset in self.theme_presets.items()
+            if self._is_theme_unlocked(preset)
+        ]
+        player_name = self._sanitize_player_name(self.config.player_name) or "guest"
         return SysterContext(
             slot_id=self.current_slot.slot_id,
             route_name=self.current_slot.route_name,
@@ -1832,6 +2355,16 @@ class GethesApp:
             rogue_wins=self.get_stat("rogue_wins"),
             rogue_best_depth=self.get_stat("rogue_best_depth"),
             last_command=self.last_command,
+            player_name=player_name,
+            language=self.i18n.active_language,
+            active_theme=self._detect_theme_name(self.config.bg_color, self.config.fg_color),
+            sound_enabled=bool(self.config.sound),
+            graphics_level=self.config.graphics,
+            ui_scale=float(self.config.ui_scale),
+            recent_commands=recent_commands,
+            recent_events=recent_events,
+            best_scores=best_scores,
+            unlocked_themes=unlocked_themes,
         )
 
     def _trigger_secret(self, token: str) -> None:
@@ -1871,6 +2404,22 @@ class GethesApp:
                 player=self._player_name(),
             )
         )
+
+        if section in {"all", "system"} and self.syster_enabled:
+            ollama_ok, ollama_reason = self.syster.get_ollama_status(force_probe=False)
+            if not self.syster.ollama_enabled:
+                ollama_state = "OFF"
+            else:
+                ollama_state = "ONLINE" if ollama_ok else "OFFLINE"
+            self.ui.write(
+                self.tr(
+                    "app.doctor.syster_ai",
+                    state=ollama_state,
+                    model=self.syster.ollama_model,
+                    host=(self.syster.ollama_host or "-"),
+                    reason=ollama_reason,
+                )
+            )
 
         if section in {"all", "ui", "system"}:
             width, height = self.ui.get_window_size()
@@ -2259,6 +2808,7 @@ class GethesApp:
             title,
             icon_key="mdi:trophy-outline",
         )
+        self._record_syster_event("achievement_unlocked", {"id": achievement_id, "title": title})
         self.audio.play("achievement")
         self._notify_theme_unlocks(achievement_id)
         self._save_current_slot(user_feedback=False)
@@ -2715,8 +3265,36 @@ class GethesApp:
         self.cloud_sync_elapsed = 0.0
         self._queue_cloud_sync(reason="autosync")
 
+    def _record_syster_command(self, raw_command: str, outcome: str = "") -> None:
+        self.syster_store.record_command(raw_command, outcome=outcome)
+
+    def _record_syster_event(self, event_type: str, payload: dict[str, object] | None = None) -> None:
+        self.syster_store.record_event(event_type, payload)
+
+    def _snapshot_syster_state(self) -> None:
+        config_payload = {
+            "sound": bool(self.config.sound),
+            "graphics": self.config.graphics,
+            "language": self.i18n.active_language,
+            "theme": self._detect_theme_name(self.config.bg_color, self.config.fg_color),
+            "ui_scale": float(self.config.ui_scale),
+            "syster_mode": self.syster.mode,
+        }
+        self.syster_store.save_snapshot(
+            slot_id=self.current_slot.slot_id,
+            route_name=self.current_slot.route_name,
+            stats=dict(self.current_slot.stats),
+            flags=dict(self.current_slot.flags),
+            config=config_payload,
+        )
+        self.syster_store.set_preference("theme", config_payload["theme"])
+        self.syster_store.set_preference("language", config_payload["language"])
+        self.syster_store.set_preference("graphics", str(config_payload["graphics"]))
+        self.syster_store.set_preference("sound", "on" if config_payload["sound"] else "off")
+
     def _save_current_slot(self, user_feedback: bool) -> None:
         self.save_manager.save_slot(self.current_slot)
+        self._snapshot_syster_state()
         if user_feedback:
             self.ui.write(
                 self.tr(
@@ -4062,6 +4640,10 @@ class GethesApp:
         self.config.active_slot = self.current_slot.slot_id
         self.config.syster_mode = self.syster.mode
         self.config.syster_endpoint = self.syster.remote_endpoint
+        self.config.syster_ollama_enabled = self.syster.ollama_enabled
+        self.config.syster_ollama_model = self.syster.ollama_model
+        self.config.syster_ollama_host = self.syster.ollama_host
+        self.config.syster_ollama_timeout = self.syster.ollama_timeout
         self.config.update_repo = self.update_manager.repo
         clean_overrides: dict[str, str] = {}
         for event, file_name in self.config.sfx_overrides.items():
@@ -4078,6 +4660,7 @@ class GethesApp:
         self._stop_mod_watcher()
         self._save_current_slot(user_feedback=False)
         self._save_config()
+        self.syster_store.close()
 
     def _start_intro_sequence(self) -> None:
         self.intro_active = True
@@ -4409,6 +4992,12 @@ class GethesApp:
             lines.append(
                 f"- syster endpoint <url|off>: {self.tr('app.help.syster_endpoint')}"
             )
+            lines.append(
+                f"- syster core ...          : {self.tr('app.help.syster_ollama')}"
+            )
+            lines.append(
+                f"- syster train ...         : {self.tr('app.help.syster_train')}"
+            )
         return "\n".join(lines)
 
     def _options_text(self) -> str:
@@ -4417,6 +5006,11 @@ class GethesApp:
         theme_style = self._normalize_theme_style(self.config.theme_style) or "terminal"
         theme_secondary = self.config.theme_secondary_color or "auto"
         remote_state = "ON" if self.syster.has_remote_endpoint() else "OFF"
+        ollama_ok, _ = self.syster.get_ollama_status(force_probe=False)
+        if not self.syster.ollama_enabled:
+            ollama_state = "OFF"
+        else:
+            ollama_state = "ONLINE" if ollama_ok else "OFFLINE"
         ui_user, ui_responsive, ui_effective = self.ui.get_scale_snapshot()
         return "\n".join(
             [
@@ -4451,6 +5045,9 @@ class GethesApp:
                 f"- {self.tr('app.options.language'):13}: {self.config.language} -> {self.i18n.active_language}",
                 f"- {self.tr('app.options.syster'):13}: {self.syster.mode}",
                 f"- {self.tr('app.options.syster_remote'):13}: {remote_state}",
+                f"- {self.tr('app.options.syster_ai'):13}: {ollama_state}",
+                f"- {self.tr('app.options.syster_ai_model'):13}: {self.syster.ollama_model}",
+                f"- {self.tr('app.options.syster_ai_host'):13}: {self.syster.ollama_host or '-'}",
                 f"- {self.tr('app.options.update_auto'):13}: {'ON' if self.config.auto_update_check else 'OFF'}",
                 f"- {self.tr('app.options.update_repo'):13}: {self.update_manager.repo or '-'}",
                 f"- {self.tr('app.options.cloud'):13}: {'ON' if (self.config.cloud_enabled and self.cloud.is_linked()) else 'OFF'}",

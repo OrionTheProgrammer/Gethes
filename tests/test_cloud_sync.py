@@ -36,6 +36,10 @@ def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     cfg.cloud_api_key = "token_123"
     cfg.cloud_enabled = True
     cfg.terminal_passthrough = True
+    cfg.syster_ollama_enabled = True
+    cfg.syster_ollama_model = "mistral"
+    cfg.syster_ollama_host = "http://127.0.0.1:11434"
+    cfg.syster_ollama_timeout = 14.5
     store.save(cfg)
 
     loaded = store.load()
@@ -44,4 +48,8 @@ def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     assert loaded.cloud_api_key == "token_123"
     assert loaded.cloud_enabled is True
     assert loaded.terminal_passthrough is True
+    assert loaded.syster_ollama_enabled is True
+    assert loaded.syster_ollama_model == "mistral"
+    assert loaded.syster_ollama_host == "http://127.0.0.1:11434"
+    assert loaded.syster_ollama_timeout == 14.5
     assert len(loaded.install_id) == 32

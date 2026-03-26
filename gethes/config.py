@@ -32,6 +32,10 @@ class GameConfig:
     active_slot: int = 1
     syster_mode: str = "lite"
     syster_endpoint: str = ""
+    syster_ollama_enabled: bool = True
+    syster_ollama_model: str = "mistral"
+    syster_ollama_host: str = "http://127.0.0.1:11434"
+    syster_ollama_timeout: float = 24.0
     update_repo: str = "OrionTheProgrammer/Gethes"
     auto_update_check: bool = True
     ui_scale: float = 1.0
@@ -113,6 +117,22 @@ class ConfigStore:
         syster_endpoint = payload.get("syster_endpoint")
         if isinstance(syster_endpoint, str):
             cfg.syster_endpoint = syster_endpoint.strip()
+
+        syster_ollama_enabled = payload.get("syster_ollama_enabled")
+        if isinstance(syster_ollama_enabled, bool):
+            cfg.syster_ollama_enabled = syster_ollama_enabled
+
+        syster_ollama_model = payload.get("syster_ollama_model")
+        if isinstance(syster_ollama_model, str):
+            cfg.syster_ollama_model = syster_ollama_model.strip() or "mistral"
+
+        syster_ollama_host = payload.get("syster_ollama_host")
+        if isinstance(syster_ollama_host, str):
+            cfg.syster_ollama_host = syster_ollama_host.strip() or "http://127.0.0.1:11434"
+
+        syster_ollama_timeout = payload.get("syster_ollama_timeout")
+        if isinstance(syster_ollama_timeout, (int, float)) and 1.0 <= float(syster_ollama_timeout) <= 120.0:
+            cfg.syster_ollama_timeout = float(syster_ollama_timeout)
 
         update_repo = payload.get("update_repo")
         if isinstance(update_repo, str):

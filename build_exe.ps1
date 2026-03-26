@@ -218,6 +218,7 @@ $args = @(
     "--hidden-import", "platformdirs",
     "--add-data", "gethes/data;gethes/data",
     "--add-data", "gethes/assets;gethes/assets",
+    "--add-data", "gethes/vendor;gethes/vendor",
     "main.py"
 )
 

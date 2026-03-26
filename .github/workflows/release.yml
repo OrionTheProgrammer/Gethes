@@ -1,0 +1,72 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = python -c "import re, pathlib; text = pathlib.Path('gethes/__init__.py').read_text(encoding='utf-8'); m = re.search(r'__version__\\s*=\\s*\"([^\"]+)\"', text); print(m.group(1) if m else '')"
+          if (-not $version) { throw 'No se pudo leer __version__ desde gethes/__init__.py' }
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -ne \"v$version\") {
+            throw \"Tag ($tag) no coincide con __version__ (v$version). Actualiza version o tag.\"
+          }
+          \"version=$version\" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build distributables
+        shell: pwsh
+        run: |
+          ./build_exe.ps1 -Installer
+
+      - name: Generate release title/body
+        id: notes
+        shell: pwsh
+        run: |
+          python tools/generate_release_notes.py --version \"${{ steps.meta.outputs.version }}\" --out release/release_body.md --title-out release/release_title.txt
+          $title = (Get-Content release/release_title.txt -Raw).Trim()
+          \"title=$title\" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.notes.outputs.title }}
+          body_path: release/release_body.md
+          files: |
+            release/Gethes-Setup-v${{ steps.meta.outputs.version }}.exe
+            release/Gethes-v${{ steps.meta.outputs.version }}-win64-portable.zip
+            release/SHA256SUMS-v${{ steps.meta.outputs.version }}.txt
+            release/Gethes-Setup-v${{ steps.meta.outputs.version }}.exe.sha256
+            release/Gethes-v${{ steps.meta.outputs.version }}-win64-portable.zip.sha256

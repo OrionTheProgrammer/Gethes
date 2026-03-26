@@ -6,3 +6,8 @@ dist/
 *.spec
 .pytest_cache/
 .hypothesis/
+# Local bundled AI runtime/models (large artifacts)
+gethes/vendor/syster_core/ollama/
+gethes/vendor/syster_core/models/
+!gethes/vendor/README.txt
+!gethes/vendor/syster_core/.gitkeep
