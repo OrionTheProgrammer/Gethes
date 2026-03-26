@@ -1,4 +1,4 @@
-from gethes.syster import SysterAssistant, SysterContext
+﻿from gethes.syster import SysterAssistant, SysterContext
 from gethes.syster_memory import SysterKnowledgeStore
 
 
@@ -6,9 +6,21 @@ def _tr(key: str, **_kwargs: object) -> str:
     return key
 
 
+def test_syster_runtime_is_locked_to_local_mistral() -> None:
+    syster = SysterAssistant(mode="off", ollama_enabled=False, ollama_model="llama3")
+    assert syster.mode == "local"
+    assert syster.ollama_enabled is True
+    assert syster.ollama_model == "mistral"
+    assert syster.set_mode("hybrid") is False
+    syster.set_ollama_enabled(False)
+    syster.set_ollama_model("qwen")
+    assert syster.ollama_enabled is True
+    assert syster.ollama_model == "mistral"
+
+
 def test_ollama_host_is_normalized() -> None:
     syster = SysterAssistant(
-        mode="lite",
+        mode="local",
         ollama_enabled=True,
         ollama_host="127.0.0.1:11434",
     )
@@ -17,7 +29,7 @@ def test_ollama_host_is_normalized() -> None:
 
 def test_reply_uses_ollama_when_available(monkeypatch) -> None:
     syster = SysterAssistant(
-        mode="lite",
+        mode="local",
         ollama_enabled=True,
         ollama_model="mistral",
         ollama_host="http://127.0.0.1:11434",
@@ -33,7 +45,7 @@ def test_reply_uses_ollama_when_available(monkeypatch) -> None:
 
 def test_reply_falls_back_when_ollama_unavailable(monkeypatch) -> None:
     syster = SysterAssistant(
-        mode="lite",
+        mode="local",
         ollama_enabled=True,
         ollama_model="mistral",
         ollama_host="http://127.0.0.1:11434",
@@ -59,7 +71,7 @@ def test_build_payload_includes_long_memory(tmp_path) -> None:
         store.upsert_long_memory("player_name", "Orion", weight=2.0, source="test")
         store.record_feedback("hola", "hola", 0.8, "positive")
         syster = SysterAssistant(
-            mode="lite",
+            mode="local",
             ollama_enabled=True,
             knowledge_store=store,
         )
@@ -73,7 +85,7 @@ def test_build_payload_includes_long_memory(tmp_path) -> None:
 
 
 def test_optimize_for_cuda_profile_quality_sets_expected_values() -> None:
-    syster = SysterAssistant(mode="lite", ollama_enabled=True)
+    syster = SysterAssistant(mode="local", ollama_enabled=True)
     result = syster.optimize_for_cuda("quality")
     assert result["profile"] == "quality"
     assert syster.ollama_context_length == 8192
@@ -82,8 +94,10 @@ def test_optimize_for_cuda_profile_quality_sets_expected_values() -> None:
 
 
 def test_runtime_env_contains_cuda_tuning_defaults() -> None:
-    syster = SysterAssistant(mode="lite", ollama_enabled=True)
+    syster = SysterAssistant(mode="local", ollama_enabled=True)
     env = syster._ollama_runtime_env()
     assert env["OLLAMA_CONTEXT_LENGTH"] == str(syster.ollama_context_length)
     assert env["OLLAMA_FLASH_ATTENTION"] in {"0", "1"}
     assert env["OLLAMA_KV_CACHE_TYPE"] in {"f16", "q8_0", "q4_0"}
+
+

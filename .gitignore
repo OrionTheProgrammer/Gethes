@@ -6,6 +6,14 @@ dist/
 *.spec
 .pytest_cache/
 .hypothesis/
+gethes_config.json
+packaging/getheslogo.ico
+release/*.zip
+release/*.exe
+release/*.sha256
+release/SHA256SUMS*.txt
+!release/notes/
+!release/notes/*.md
 # Local bundled AI runtime/models (large artifacts)
 gethes/vendor/syster_core/ollama/
 gethes/vendor/syster_core/models/

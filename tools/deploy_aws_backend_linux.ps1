@@ -10,7 +10,9 @@ param(
     [string]$ApiKey = "",
     [string]$BindHost = "0.0.0.0",
     [int]$Port = 443,
-    [int]$OnlineWindowSeconds = 120
+    [int]$OnlineWindowSeconds = 120,
+    [string]$GithubRepo = "OrionTheProgrammer/Gethes",
+    [int]$NewsRefreshSeconds = 600
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,7 +63,9 @@ try {
         "GETHES_BIND_HOST=$BindHost",
         "GETHES_PORT=$Port",
         "GETHES_ONLINE_WINDOW_SECONDS=$OnlineWindowSeconds",
-        "GETHES_DB_PATH=$RemoteDir/gethes_telemetry.db"
+        "GETHES_DB_PATH=$RemoteDir/gethes_telemetry.db",
+        "GETHES_GITHUB_REPO=$GithubRepo",
+        "GETHES_NEWS_REFRESH_SECONDS=$NewsRefreshSeconds"
     )
     Write-LinuxText -Path $envTemp -Content ($envLines -join "`n")
 
@@ -94,7 +98,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/gethes/aws-backend.env
 WorkingDirectory=__REMOTE_DIR__
-ExecStart=__REMOTE_DIR__/.venv/bin/python __REMOTE_DIR__/aws_cloud_service.py --db-path ${GETHES_DB_PATH} --api-key ${GETHES_API_KEY} --host ${GETHES_BIND_HOST} --port ${GETHES_PORT} --online-window-seconds ${GETHES_ONLINE_WINDOW_SECONDS}
+ExecStart=__REMOTE_DIR__/.venv/bin/python __REMOTE_DIR__/aws_cloud_service.py --db-path ${GETHES_DB_PATH} --api-key ${GETHES_API_KEY} --host ${GETHES_BIND_HOST} --port ${GETHES_PORT} --online-window-seconds ${GETHES_ONLINE_WINDOW_SECONDS} --github-repo ${GETHES_GITHUB_REPO} --news-refresh-seconds ${GETHES_NEWS_REFRESH_SECONDS}
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1

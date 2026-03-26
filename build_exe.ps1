@@ -52,6 +52,50 @@ function Resolve-AppVersion {
     return $version
 }
 
+function Ensure-AppIconFile {
+    $pngPath = "gethes\\assets\\icons\\getheslogo.png"
+    $icoPath = "packaging\\getheslogo.ico"
+    if (-not (Test-Path $pngPath)) {
+        return ""
+    }
+
+    $rebuild = $true
+    if (Test-Path $icoPath) {
+        $pngTime = (Get-Item $pngPath).LastWriteTimeUtc
+        $icoTime = (Get-Item $icoPath).LastWriteTimeUtc
+        $rebuild = $icoTime -lt $pngTime
+    }
+
+    if ($rebuild) {
+        Write-Host "Generando icono ICO desde $pngPath ..."
+        $pythonScript = @"
+from pathlib import Path
+from PIL import Image
+
+src = Path(r"$pngPath")
+dst = Path(r"$icoPath")
+dst.parent.mkdir(parents=True, exist_ok=True)
+img = Image.open(src).convert("RGBA")
+img.save(dst, format="ICO", sizes=[(16,16), (24,24), (32,32), (48,48), (64,64), (128,128), (256,256)])
+"@
+        try {
+            $pythonScript | python -
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "No se pudo convertir icono PNG a ICO. Se continuara sin icono de ejecutable."
+                return ""
+            }
+        } catch {
+            Write-Host "No se pudo convertir icono PNG a ICO. Se continuara sin icono de ejecutable."
+            return ""
+        }
+    }
+
+    if (Test-Path $icoPath) {
+        return $icoPath
+    }
+    return ""
+}
+
 function Resolve-SignTool {
     $cmd = Get-Command signtool -ErrorAction SilentlyContinue
     if ($cmd) {
@@ -171,13 +215,100 @@ function Compress-WithRetry {
         [int]$MaxRetries = 6
     )
 
+    function Remove-FileWithRetry {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$FilePath,
+            [int]$Retries = 8
+        )
+        if (-not (Test-Path $FilePath)) {
+            return
+        }
+
+        for ($i = 1; $i -le [Math]::Max(1, $Retries); $i++) {
+            try {
+                Remove-Item -LiteralPath $FilePath -Force -ErrorAction Stop
+                if (-not (Test-Path $FilePath)) {
+                    return
+                }
+            } catch {
+                if ($i -ge $Retries) {
+                    throw
+                }
+                Start-Sleep -Milliseconds ([Math]::Min(2500, 250 * $i))
+            }
+        }
+    }
+
+    function New-StagingCopy {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string[]]$InputPaths
+        )
+
+        $stageDir = Join-Path $env:TEMP ("gethes_zip_stage_" + [Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+
+        foreach ($entry in $InputPaths) {
+            if ($entry.IndexOfAny(@('*', '?', '[')) -ge 0) {
+                $items = Get-ChildItem -Path $entry -Force -ErrorAction Stop
+            } else {
+                $item = Get-Item -LiteralPath $entry -Force -ErrorAction Stop
+                $items = @($item)
+            }
+
+            foreach ($item in $items) {
+                $destination = Join-Path $stageDir $item.Name
+                if ($item.PSIsContainer) {
+                    Copy-Item -LiteralPath $item.FullName -Destination $destination -Recurse -Force -ErrorAction Stop
+                } else {
+                    Copy-Item -LiteralPath $item.FullName -Destination $destination -Force -ErrorAction Stop
+                }
+            }
+        }
+
+        return $stageDir
+    }
+
+    function Invoke-PythonZip {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$SourceDir,
+            [Parameter(Mandatory = $true)]
+            [string]$ZipPath
+        )
+
+        $pythonZipScript = @"
+from pathlib import Path
+import zipfile
+
+src = Path(r'''$SourceDir''')
+dst = Path(r'''$ZipPath''')
+
+with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    for item in src.rglob("*"):
+        if item.is_file():
+            zf.write(item, item.relative_to(src))
+"@
+        $pythonZipScript | python -
+        if ($LASTEXITCODE -ne 0) {
+            throw "Python ZIP fallback failed."
+        }
+    }
+
     $retries = [Math]::Max(1, $MaxRetries)
     for ($attempt = 1; $attempt -le $retries; $attempt++) {
+        $stagePath = ""
         try {
-            if (Test-Path $DestinationPath) {
-                Remove-Item $DestinationPath -Force -ErrorAction SilentlyContinue
+            Remove-FileWithRetry -FilePath $DestinationPath -Retries 10
+            $stagePath = New-StagingCopy -InputPaths $Path
+            $stagePattern = Join-Path $stagePath "*"
+            try {
+                Compress-Archive -Path $stagePattern -DestinationPath $DestinationPath -CompressionLevel Optimal -ErrorAction Stop
+            } catch {
+                Write-Host "Compress-Archive failed. Falling back to Python zip writer..."
+                Invoke-PythonZip -SourceDir $stagePath -ZipPath $DestinationPath
             }
-            Compress-Archive -Path $Path -DestinationPath $DestinationPath -CompressionLevel Optimal
             return
         } catch {
             if ($attempt -ge $retries) {
@@ -186,6 +317,10 @@ function Compress-WithRetry {
             $waitMs = [Math]::Min(3000, 400 * $attempt)
             Write-Host "ZIP temporalmente bloqueado ($attempt/$retries). Reintentando en $waitMs ms..."
             Start-Sleep -Milliseconds $waitMs
+        } finally {
+            if (-not [string]::IsNullOrWhiteSpace($stagePath) -and (Test-Path $stagePath)) {
+                Remove-Item -LiteralPath $stagePath -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
@@ -198,6 +333,8 @@ if ($OneFile) {
 if (-not $OneFile -and -not $NoInstaller) {
     $Installer = $true
 }
+
+$iconFile = Ensure-AppIconFile
 
 $args = @(
     "-y",
@@ -221,6 +358,10 @@ $args = @(
     "--add-data", "gethes/vendor;gethes/vendor",
     "main.py"
 )
+
+if (-not [string]::IsNullOrWhiteSpace($iconFile)) {
+    $args += @("--icon", $iconFile)
+}
 
 if ($Clean) {
     $args = @("--clean") + $args
@@ -336,6 +477,10 @@ if ($Installer) {
     }
 }
 
-Write-ReleaseChecksums -Version $version -ArtifactPaths $releaseArtifacts
+if ($releaseArtifacts.Count -gt 0) {
+    Write-ReleaseChecksums -Version $version -ArtifactPaths $releaseArtifacts
+} else {
+    Write-Host "Checksum omitido: no hay artefactos en release (build local sin empaquetado)."
+}
 
 Write-Host "Done. Check dist\\"

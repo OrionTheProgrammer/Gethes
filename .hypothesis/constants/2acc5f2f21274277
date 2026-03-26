@@ -1,4 +1,0 @@
-# file: C:\Proyectos\Gethes\gethes\story\story_mode.py
-# hypothesis_version: 6.151.9
-
-['Gethes', 'GethesApp', 'anterior', 'append', 'chapter', 'chapter_page', 'chapters', 'exit', 'game.story.close', 'game.story.controls', 'game.story.fallback', 'game.story.finish', 'game.story.invalid', 'game.story.mood_line', 'game.story.status', 'game.story.title', 'message', 'mode', 'n', 'next', 'p', 'pages', 'prev', 'replace', 'sair', 'salir', 'seguinte', 'siguiente', 'story.json', 'story_es.json', 'success', 'text', 'tick', 'title', 'ui.ready', 'utf-8']

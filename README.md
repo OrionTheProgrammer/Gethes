@@ -1,49 +1,52 @@
-﻿# Gethes
+# Gethes
 
-Gethes es una experiencia interactiva en forma de terminal narrativa.  
-No es solo un juego de consola: es una interfaz viva, con identidad propia, minijuegos, progresion y una historia centrada en secretos del sistema.
+Gethes is an interactive terminal-driven game experience built with `pygame-ce`.
+It combines a stylized in-game console, multiple mini-games, persistent progression,
+and a narrative layer centered on Syster.
 
-## Que es Gethes
+## What Gethes Is
 
-Gethes combina tres capas en una sola experiencia:
+Gethes merges three systems into one runtime:
 
-- Una terminal estilizada en tiempo real, completamente hecha en `pygame-ce`.
-- Un conjunto de minijuegos integrados dentro del mismo entorno.
-- Un hilo narrativo donde Syster (el asistente virtual) guia, responde y oculta informacion.
+- A real-time custom terminal UI rendered in `pygame-ce`.
+- Integrated mini-games running inside the same shell-like environment.
+- A story-driven assistant (Syster) that reacts to player context and progression.
 
-Todo ocurre desde la propia consola del juego para mantener inmersion total.
+Everything happens inside the game interface to preserve immersion.
 
-## Pilares de la experiencia
+## Core Experience
 
-- Interfaz oscura personalizable: temas, tipografia, color y escala UI adaptativa.
-- Modo historia textual con enfoque en misterio, memoria y trazas del creador.
-- Soporte de mods locales para temas y contenido de historia.
-- Minijuegos integrados: Snake, Ahorcado (1P/2P), Gato y CodeBreaker.
-- Sistema de logros con notificaciones en pantalla y efectos de sonido.
-- Perfiles de guardado por slots para rutas y progreso paralelos.
-- Soporte multilenguaje: espanol, ingles y portugues, con deteccion automatica.
-- Syster local con modo hibrido opcional para respuestas remotas.
-- Actualizacion automatica desde GitHub Releases mediante instalador.
+- Fully customizable visual identity: themes, typography, colors, and adaptive UI scale.
+- Text-based story mode with choices, hidden files, and route progression.
+- Local mod support for themes and story content.
+- Integrated mini-games: Snake, Hangman (1P/2P), Tic-Tac-Toe, CodeBreaker, Physics Lab, and Roguelike.
+- Achievement system with in-game notifications and sound cues.
+- Multi-slot saves for parallel routes and profiles.
+- Multi-language support: Spanish, English, Portuguese, French, and German (with auto-detection).
+- Local Syster runtime powered by Mistral through Ollama.
+- Auto-update flow through GitHub Releases.
+- Domain-supervised runtime (hexagonal baseline) for resilience and fault isolation.
+- Cloud sync for presence, scores, preferences, and Syster telemetry.
+- Cloud account system (register/login) with news feed pulled from GitHub releases/commits.
 
-## Identidad narrativa
+## Narrative Direction
 
-En Gethes, la consola es una puerta.  
-Syster no actua como un menu de ayuda tradicional: es parte de la historia, observa al usuario y reacciona segun el contexto, el progreso y los comandos utilizados.
+In Gethes, the console is the world itself.
+Syster is not a generic help panel; it is part of the fiction and responds based on
+commands, history progress, and player behavior.
 
-El proyecto esta pensado para que cada sesion se sienta como una exploracion de un sistema que no deberia estar abierto.
+## Project Status
 
-## Estado del proyecto
-
-- Version actual: `v0.08`
-- Estado: desarrollo activo
-- Plataforma principal: Windows
-- Distribucion recomendada: instalador (`Setup`) publicado en Releases
+- Current version: `v0.08`
+- Status: active development
+- Primary platform: Windows
+- Recommended distribution: installer (`Setup`) published in GitHub Releases
 
 ## Vision
 
-Gethes busca evolucionar como una novela interactiva de consola con gameplay modular:
+Gethes is evolving toward a modular console visual novel with deeper gameplay loops:
 
-- nuevas rutas narrativas,
-- mas minijuegos,
-- mayor profundidad de Syster,
-- y una presentacion audiovisual cada vez mas inmersiva.
+- new narrative routes,
+- more mini-games,
+- stronger Syster memory and interaction quality,
+- and higher production value in presentation and audio-visual feedback.

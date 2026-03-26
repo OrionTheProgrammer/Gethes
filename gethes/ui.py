@@ -62,6 +62,7 @@ class ConsoleUI:
         self.windowed_size = (self.width, self.height)
         self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
         pygame.display.set_caption(title)
+        self._set_window_icon()
 
         self.command_handler = on_command
         self.on_close: Callable[[], None] | None = None
@@ -178,6 +179,16 @@ class ConsoleUI:
         self.error_overlay_text = ""
         self._bg_cache_surface: pygame.Surface | None = None
         self._bg_cache_key: tuple[object, ...] | None = None
+
+    def _set_window_icon(self) -> None:
+        icon_path = resource_package_dir() / "assets" / "icons" / "getheslogo.png"
+        if not icon_path.exists():
+            return
+        try:
+            icon_surface = pygame.image.load(str(icon_path))
+            pygame.display.set_icon(icon_surface)
+        except Exception:
+            return
 
     def _refresh_scale(self, reload_fonts: bool) -> None:
         fit = min(self.width / self.base_width, self.height / self.base_height)
@@ -389,8 +400,8 @@ class ConsoleUI:
             if self.echo_commands:
                 self.write(f"{self.prompt_text} {raw}")
 
-        self.command_handler(raw)
-        self._play_sound("message")
+        if self._invoke_command_handler(raw):
+            self._play_sound("message")
 
     def _handle_action_button_click(self, pos: tuple[int, int]) -> bool:
         if not self.input_enabled or not self._action_button_hit_areas:
@@ -439,8 +450,18 @@ class ConsoleUI:
         self.history_index = len(self.history)
         if self.echo_commands:
             self.write(f"{self.prompt_text} {command}")
-        self.command_handler(command)
-        self._play_sound("message")
+        if self._invoke_command_handler(command):
+            self._play_sound("message")
+
+    def _invoke_command_handler(self, command: str) -> bool:
+        try:
+            self.command_handler(command)
+            return True
+        except Exception as exc:
+            self.write(f"[runtime-error] {type(exc).__name__}: {exc}")
+            self.set_status("Runtime recovered after command failure.")
+            self._play_sound("error")
+            return False
 
     def _close_requested(self) -> None:
         if self.on_close is not None:

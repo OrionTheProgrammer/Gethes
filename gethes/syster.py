@@ -37,7 +37,8 @@ except ImportError:  # pragma: no cover - optional dependency fallback
     wait_exponential = None
 
 
-SYSTER_MODES = {"off", "lite", "lore", "hybrid"}
+SYSTER_MODES = {"local"}
+SYSTER_REQUIRED_MODEL = "mistral"
 
 
 FOLLOW_UP_TOKENS = {
@@ -180,10 +181,10 @@ class SysterContext:
 class SysterAssistant:
     def __init__(
         self,
-        mode: str = "lite",
+        mode: str = "local",
         remote_endpoint: str | None = None,
         remote_timeout: float = 2.2,
-        ollama_enabled: bool = False,
+        ollama_enabled: bool = True,
         ollama_model: str = "mistral",
         ollama_host: str | None = None,
         ollama_timeout: float = 24.0,
@@ -198,13 +199,13 @@ class SysterAssistant:
         ollama_kv_cache_type: str = "q8_0",
         ollama_keep_alive: str = "20m",
     ) -> None:
-        self.mode = mode if mode in SYSTER_MODES else "lite"
+        self.mode = "local"
         self.last_intent = "unknown"
         self.memory: deque[tuple[str, str]] = deque(maxlen=8)
-        self.remote_endpoint = (remote_endpoint or os.getenv("GETHES_SYSTER_ENDPOINT", "")).strip()
+        self.remote_endpoint = ""
         self.remote_timeout = max(0.7, min(8.0, float(remote_timeout)))
-        self.ollama_enabled = bool(ollama_enabled)
-        self.ollama_model = (ollama_model or "mistral").strip() or "mistral"
+        self.ollama_enabled = True
+        self.ollama_model = SYSTER_REQUIRED_MODEL
         self.ollama_host = self._normalize_ollama_host(
             (ollama_host or os.getenv("GETHES_OLLAMA_HOST", "http://127.0.0.1:11434")).strip()
         )
@@ -278,28 +279,24 @@ class SysterAssistant:
             self.ollama_keep_alive = keep_alive_raw
 
     def set_mode(self, mode: str) -> bool:
-        if mode not in SYSTER_MODES:
+        if mode != "local":
             return False
-        self.mode = mode
+        self.mode = "local"
         return True
 
     def has_remote_endpoint(self) -> bool:
-        return bool(self.remote_endpoint)
+        return False
 
     def set_remote_endpoint(self, endpoint: str | None) -> None:
-        self.remote_endpoint = (endpoint or "").strip()
+        self.remote_endpoint = ""
 
     def set_ollama_enabled(self, enabled: bool) -> None:
-        self.ollama_enabled = bool(enabled)
+        self.ollama_enabled = True
         self.ollama_last_probe_ts = 0.0
-        if enabled:
-            self.warmup_local_ai()
+        self.warmup_local_ai()
 
     def set_ollama_model(self, model: str) -> None:
-        token = (model or "").strip()
-        if not token:
-            token = "mistral"
-        self.ollama_model = token
+        self.ollama_model = SYSTER_REQUIRED_MODEL
         self._ollama_model_ready = False
         self._ollama_model_check_ts = 0.0
 
@@ -503,9 +500,6 @@ class SysterAssistant:
         tr: Callable[[str], str],
         context: SysterContext | None = None,
     ) -> str:
-        if self.mode == "off":
-            return tr("app.syster.reply.off")
-
         ctx = context or SysterContext()
         normalized = self._normalize_text(prompt)
         if not normalized:
@@ -521,13 +515,6 @@ class SysterAssistant:
             self.last_intent = "ollama"
             self.memory.append((normalized, "ollama"))
             return ollama_reply
-
-        if self.mode == "hybrid":
-            remote_reply = self._remote_reply(prompt.strip(), ctx)
-            if remote_reply:
-                self.last_intent = "remote"
-                self.memory.append((normalized, "remote"))
-                return remote_reply
 
         if self._is_follow_up(normalized):
             follow = self._follow_up_reply(tr, ctx)
@@ -602,12 +589,7 @@ class SysterAssistant:
 
         if intent == "creator":
             base = tr("app.syster.reply.creator")
-            if self.mode == "lore":
-                return f"{base} {tr('app.syster.reply.lore')}"
             return base
-
-        if self.mode == "lore":
-            return f"{tr('app.syster.reply.unknown')} {tr('app.syster.reply.lore')}"
 
         hint_cmd = self._suggest_command(intent, ctx)
         return tr("app.syster.reply.hint", cmd=hint_cmd)
@@ -642,9 +624,6 @@ class SysterAssistant:
         }:
             hint_cmd = self._suggest_command(self.last_intent, context)
             return tr("app.syster.reply.followup", cmd=hint_cmd)
-
-        if self.mode == "lore":
-            return tr("app.syster.reply.lore")
 
         hint_cmd = self._suggest_command("help", context)
         return tr("app.syster.reply.hint", cmd=hint_cmd)

@@ -7,7 +7,7 @@ from gethes.syster_memory import SysterKnowledgeStore
 def test_observe_exchange_persists_training_and_memory(tmp_path) -> None:
     store = SysterKnowledgeStore(tmp_path / "syster")
     try:
-        syster = SysterAssistant(mode="lite", knowledge_store=store)
+        syster = SysterAssistant(mode="local", knowledge_store=store)
         context = SysterContext(
             player_name="Orion",
             route_name="Route 2",
@@ -63,3 +63,4 @@ def test_observe_exchange_persists_training_and_memory(tmp_path) -> None:
         assert store.delete_long_memory("player_name") is False
     finally:
         store.close()
+

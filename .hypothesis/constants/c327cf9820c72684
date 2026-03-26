@@ -1,4 +1,0 @@
-# file: C:\Proyectos\Gethes\gethes\updater.py
-# hypothesis_version: 6.151.9
-
-[8.0, 1024, '    break', '  try {', '  }', '  } catch {', ')', '-ExePath', '-ExecutionPolicy', '-File', '-NoProfile', '-TargetDir', '-WindowStyle', '-ZipPath', '.', '.exe', '.git', '.part', '.zip', '/', '/NOCANCEL', '/NORESTART', '/SP-', '/SUPPRESSMSGBOXES', '/VERYSILENT', '0.0.0', 'Accept', 'Bypass', 'Content-Length', 'GET', 'Gethes-Updater/0.02', 'Hidden', 'User-Agent', '[0-9]+', '[A-Za-z0-9_.-]+', '[^A-Za-z0-9_.-]+', '_', 'ascii', 'asset_missing', 'assets', 'available', 'gethes', 'html_url', 'https://github.com/', 'installer', 'installer_missing', 'invalid_response', 'name', 'network_error', 'ok', 'onefile', 'param(', 'portable', 'portable_missing', 'powershell', 'replace', 'repo_missing', 'setup', 'tag_name', 'up_to_date', 'url', 'utf-8', 'v', 'wb', 'win64', '}']

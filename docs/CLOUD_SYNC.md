@@ -1,43 +1,75 @@
-# Gethes Cloud Sync (Player DB Link)
+# Gethes Cloud Sync Contract
 
-This document defines the cloud contract used by the `cloud` command.
+This document defines the cloud sync contract used by Gethes clients and backend services.
 
-## Goal
+## Scope
 
-Allow Gethes clients to sync:
-- current players (presence/online),
-- player usernames,
-- best scores (`snake`, `roguelike`),
-- user preferences (graphics, language, UI scale, theme),
-- Syster training summary and recent feedback samples.
+Cloud sync is used to persist and aggregate:
 
-## Client commands
+- player identity and install-level telemetry,
+- save/profile metadata and best scores,
+- player preferences (graphics, language, UI scale, theme),
+- Syster training summary and feedback samples,
+- authenticated account sessions,
+- release/commit news feed for registered users.
+
+## In-Game Commands
+
+### Cloud Core
 
 - `cloud status`
-- `cloud link <https://api.your-server> [api_key]`
+- `cloud link <http(s)://host[:port]> [api_key]`
 - `cloud key <token|off>`
 - `cloud sync`
 - `cloud online`
+- `cloud interval <20-600>`
+- `cloud news [count]`
+- `cloud newsinterval <60-3600>`
 - `cloud off`
 
-## HTTP contract
+### Account / Auth
 
-Base URL:
-- `https://api.your-server`
+- `auth status`
+- `auth setup`
+- `auth register <username> <email> <password>`
+- `auth login <username|email> <password>`
+- `auth me`
+- `auth logout`
 
-Heartbeat endpoint:
+## Base URL
+
+Example:
+
+- `http://ec2-44-205-252-139.compute-1.amazonaws.com:443`
+
+## HTTP Endpoints
+
+- `GET /health`
 - `POST /v1/telemetry/heartbeat`
-
-Presence endpoint:
 - `GET /v1/telemetry/presence`
+- `POST /v1/auth/register`
+- `POST /v1/auth/login`
+- `POST /v1/auth/logout`
+- `GET /v1/auth/me`
+- `GET /v1/news`
 
-### Heartbeat request body
+## Authentication Layers
+
+1. **Backend API key** (optional):  
+   Use `Authorization: Bearer <api_key>` or `X-API-Key: <api_key>`.
+
+2. **User session token** (required for account/news endpoints):  
+   Use `X-Gethes-Session: <session_token>`.
+
+Heartbeat can be called without a user session, but when session is present the backend can bind telemetry to the authenticated user.
+
+## Heartbeat Request Example
 
 ```json
 {
   "install_id": "8cf2660df3524f7abf0d32eb7c44ef6b",
   "player_name": "Orion",
-  "reason": "manual_sync",
+  "reason": "autosync",
   "version": "0.08",
   "timestamp_unix": 1772688000,
   "profile": {
@@ -60,7 +92,7 @@ Presence endpoint:
   },
   "preferences": {
     "language_mode": "auto",
-    "language_active": "es",
+    "language_active": "en",
     "graphics": "high",
     "sound": true,
     "ui_scale": 1.1,
@@ -72,7 +104,7 @@ Presence endpoint:
     }
   },
   "syster": {
-    "mode": "hybrid",
+    "mode": "local",
     "core_enabled": true,
     "model": "mistral",
     "training": {
@@ -86,35 +118,17 @@ Presence endpoint:
       },
       "feedback_avg_score": 0.79,
       "feedback_positive": 730,
-      "feedback_negative": 58,
-      "feedback_samples": [
-        {
-          "local_id": 1732,
-          "ts": 1772688123.0,
-          "score": 1.0,
-          "notes": "auto:player",
-          "prompt": "Estoy bloqueado en historia, dame una pista.",
-          "reply": "Busca el archivo roto antes de abrir la puerta principal."
-        }
-      ],
-      "memory_top": [
-        {
-          "key": "persona_tone",
-          "value": "melancolico, preciso, inmersivo, empatico",
-          "weight": 3.3,
-          "source": "curriculum"
-        }
-      ],
-      "intent_top": [
-        {"intent": "story", "count": 125},
-        {"intent": "rogue", "count": 93}
-      ]
+      "feedback_negative": 58
     }
+  },
+  "auth_user": {
+    "username": "orion",
+    "email": "orion@example.com"
   }
 }
 ```
 
-### Expected response
+## Heartbeat Response Example
 
 ```json
 {
@@ -125,11 +139,12 @@ Presence endpoint:
   "syster_profile_synced": true,
   "syster_feedback_ingested": 6,
   "syster_global_samples": 4280,
-  "syster_global_avg_score": 0.77
+  "syster_global_avg_score": 0.77,
+  "server_time_utc": "2026-03-26T22:00:00Z"
 }
 ```
 
-### Presence response
+## Presence Response Example
 
 ```json
 {
@@ -140,42 +155,64 @@ Presence endpoint:
 }
 ```
 
-## Extra Oracle tables
+## Auth Contract (High Level)
 
-The Oracle backend now maintains:
-- `GETHES_TELEMETRY_PLAYERS`
-- `GETHES_SYSTER_PROFILE`
-- `GETHES_SYSTER_FEEDBACK`
+### Register
 
-## Minimal DB model (SQL)
+`POST /v1/auth/register`
 
-```sql
-create table if not exists players (
-  install_id text primary key,
-  player_name text not null,
-  version text not null,
-  last_seen timestamptz not null default now(),
-  slot_id int not null default 1,
-  route_name text not null default 'Route 1',
-  snake_best_score int not null default 0,
-  snake_best_level int not null default 0,
-  rogue_best_depth int not null default 0,
-  rogue_best_gold int not null default 0,
-  rogue_best_kills int not null default 0,
-  graphics text not null default 'medium',
-  language_active text not null default 'en',
-  ui_scale numeric not null default 1.0,
-  theme text not null default 'obsidian'
-);
+Body:
+
+```json
+{
+  "username": "orion",
+  "email": "orion@example.com",
+  "password": "StrongPass123",
+  "install_id": "8cf2660df3524f7abf0d32eb7c44ef6b"
+}
 ```
 
-## Online players rule
+Returns session token on success.
 
-Recommended rule:
-- `players_online = count(*) where last_seen > now() - interval '2 minutes'`
+### Login
 
-## Security
+`POST /v1/auth/login`
 
-- Use HTTPS only.
-- Validate `Authorization: Bearer <token>` (or `X-API-Key`).
-- Apply rate limit per `install_id` and per IP.
+Body:
+
+```json
+{
+  "login": "orion@example.com",
+  "password": "StrongPass123",
+  "install_id": "8cf2660df3524f7abf0d32eb7c44ef6b"
+}
+```
+
+Returns session token on success.
+
+### Me
+
+`GET /v1/auth/me`  
+Headers: `X-Gethes-Session`
+
+### Logout
+
+`POST /v1/auth/logout`  
+Headers: `X-Gethes-Session`
+
+## News Feed Contract (High Level)
+
+`GET /v1/news?limit=8&mark_seen=0&repo=OrionTheProgrammer/Gethes`  
+Headers: `X-Gethes-Session`
+
+News items are sourced from:
+
+- latest GitHub release,
+- latest repository commits.
+
+## Recommended Security
+
+- Use HTTPS in production whenever possible.
+- Keep API key in a server-only secret store.
+- Apply request throttling by `install_id` and by IP.
+- Rotate keys/tokens periodically.

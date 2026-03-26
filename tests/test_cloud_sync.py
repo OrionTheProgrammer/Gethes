@@ -27,6 +27,22 @@ def test_cloud_not_linked_returns_safe_status() -> None:
     assert response.message == "not_linked"
 
 
+def test_cloud_session_header_and_state() -> None:
+    client = CloudSyncClient("https://api.example.com", api_key="token123", session_token="sess_abc")
+    headers = client._headers()
+    assert headers["X-Gethes-Session"] == "sess_abc"
+    assert client.has_session() is True
+    client.clear_session()
+    assert client.has_session() is False
+
+
+def test_cloud_news_requires_session() -> None:
+    client = CloudSyncClient("https://api.example.com")
+    response = client.fetch_news(limit=5)
+    assert response.ok is False
+    assert response.message == "not_authenticated"
+
+
 def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     path = tmp_path / "cfg.json"
     store = ConfigStore(path)
@@ -35,6 +51,11 @@ def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     cfg.cloud_endpoint = "https://api.example.com"
     cfg.cloud_api_key = "token_123"
     cfg.cloud_enabled = True
+    cfg.cloud_session_token = "sess_123"
+    cfg.cloud_auth_username = "orion"
+    cfg.cloud_auth_email = "orion@example.com"
+    cfg.cloud_sync_interval_seconds = 90
+    cfg.cloud_news_poll_seconds = 240
     cfg.terminal_passthrough = True
     cfg.syster_ollama_enabled = True
     cfg.syster_ollama_model = "mistral"
@@ -47,6 +68,11 @@ def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     assert loaded.cloud_endpoint == "https://api.example.com"
     assert loaded.cloud_api_key == "token_123"
     assert loaded.cloud_enabled is True
+    assert loaded.cloud_session_token == "sess_123"
+    assert loaded.cloud_auth_username == "orion"
+    assert loaded.cloud_auth_email == "orion@example.com"
+    assert loaded.cloud_sync_interval_seconds == 90
+    assert loaded.cloud_news_poll_seconds == 240
     assert loaded.terminal_passthrough is True
     assert loaded.syster_ollama_enabled is True
     assert loaded.syster_ollama_model == "mistral"

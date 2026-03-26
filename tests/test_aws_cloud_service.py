@@ -80,3 +80,49 @@ def test_aws_store_heartbeat_and_presence(tmp_path) -> None:
         assert float(summary["avg_score"]) >= 0.9
     finally:
         store.close()
+
+
+def test_aws_store_auth_and_news(tmp_path) -> None:
+    store = AwsSqliteTelemetryStore(tmp_path / "aws_auth.db", online_window_seconds=120)
+    try:
+        result = store.register_user(
+            username="orion_dev",
+            email="orion@example.com",
+            password="secretpass123",
+            install_id="abcd1234efgh5678",
+        )
+        assert result["ok"] is True
+        token = str(result["session_token"])
+        assert token
+
+        me = store.resolve_session_user(token)
+        assert me is not None
+        assert str(me["username"]) == "orion_dev"
+
+        login = store.login_user(
+            login="orion@example.com",
+            password="secretpass123",
+            install_id="abcd1234efgh5678",
+        )
+        assert login["ok"] is True
+
+        # Avoid network dependency in test.
+        store.refresh_news_from_github = lambda repo="": {"inserted": 0, "repo": 1}  # type: ignore[method-assign]
+        store._insert_news_item(
+            item_key="release:v0.99",
+            source_type="release",
+            title="Release v0.99",
+            summary="Major cloud update",
+            source_url="https://example.com/release",
+            published_at=1772688000.0,
+        )
+        feed = store.fetch_news_for_user(session_token=token, limit=5, mark_seen=False)
+        assert feed["ok"] is True
+        assert int(feed["unread"]) >= 1
+        assert isinstance(feed["items"], list)
+        assert feed["items"]
+
+        assert store.logout_session(token) is True
+        assert store.resolve_session_user(token) is None
+    finally:
+        store.close()

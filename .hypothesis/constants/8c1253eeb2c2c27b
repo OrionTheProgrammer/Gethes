@@ -1,4 +1,0 @@
-# file: C:\Proyectos\Gethes\gethes\games\tictactoe.py
-# hypothesis_version: 6.151.9
-
-[-999, 999, ', ', '---+---+---', 'GethesApp', 'O', 'X', 'exit', 'game.ttt.again', 'game.ttt.cancel', 'game.ttt.controls', 'game.ttt.cpu_win', 'game.ttt.draw', 'game.ttt.info', 'game.ttt.invalid', 'game.ttt.player_win', 'game.ttt.status', 'game.ttt.title', 'game.ttt.win_line', 'game_over', 'quit', 'sair', 'salir', 'success', 'tick', 'ui.ready']

@@ -25,10 +25,12 @@ class CloudSyncClient:
         self,
         endpoint: str = "",
         api_key: str = "",
+        session_token: str = "",
         timeout: float = 2.6,
     ) -> None:
         self.endpoint = self.normalize_endpoint(endpoint)
         self.api_key = api_key.strip()
+        self.session_token = session_token.strip()
         self.timeout = max(0.8, min(9.0, float(timeout)))
 
     @staticmethod
@@ -41,12 +43,23 @@ class CloudSyncClient:
             endpoint = endpoint[: -len("/v1/telemetry")]
         return endpoint
 
-    def configure(self, endpoint: str, api_key: str = "") -> None:
+    def configure(self, endpoint: str, api_key: str = "", session_token: str | None = None) -> None:
         self.endpoint = self.normalize_endpoint(endpoint)
         self.api_key = api_key.strip()
+        if session_token is not None:
+            self.session_token = session_token.strip()
 
     def is_linked(self) -> bool:
         return bool(self.endpoint)
+
+    def has_session(self) -> bool:
+        return bool(self.session_token)
+
+    def set_session(self, token: str) -> None:
+        self.session_token = token.strip()
+
+    def clear_session(self) -> None:
+        self.session_token = ""
 
     def masked_key(self) -> str:
         token = self.api_key.strip()
@@ -73,6 +86,91 @@ class CloudSyncClient:
             path="/v1/telemetry/presence",
         )
 
+    def register(
+        self,
+        *,
+        username: str,
+        email: str,
+        password: str,
+        install_id: str,
+    ) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        return self._request_json(
+            method="POST",
+            path="/v1/auth/register",
+            payload={
+                "username": username,
+                "email": email,
+                "password": password,
+                "install_id": install_id,
+            },
+        )
+
+    def login(self, *, login: str, password: str, install_id: str) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        return self._request_json(
+            method="POST",
+            path="/v1/auth/login",
+            payload={
+                "login": login,
+                "password": password,
+                "install_id": install_id,
+            },
+        )
+
+    def logout(self) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        if not self.has_session():
+            return CloudResponse(False, 0, "not_authenticated", {})
+        response = self._request_json(
+            method="POST",
+            path="/v1/auth/logout",
+            payload={},
+        )
+        if response.ok:
+            self.clear_session()
+        return response
+
+    def fetch_me(self) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        if not self.has_session():
+            return CloudResponse(False, 0, "not_authenticated", {})
+        return self._request_json(
+            method="GET",
+            path="/v1/auth/me",
+        )
+
+    def fetch_news(
+        self,
+        *,
+        limit: int = 8,
+        mark_seen: bool = False,
+        repo: str = "",
+    ) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        if not self.has_session():
+            return CloudResponse(False, 0, "not_authenticated", {})
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 8
+        payload: dict[str, object] = {
+            "limit": max(1, min(30, limit_value)),
+            "mark_seen": 1 if mark_seen else 0,
+        }
+        if repo.strip():
+            payload["repo"] = repo.strip()
+        return self._request_json(
+            method="GET",
+            path="/v1/news",
+            payload=payload,
+        )
+
     def _request_json(
         self,
         method: str,
@@ -93,12 +191,14 @@ class CloudSyncClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
             headers["X-API-Key"] = self.api_key
+        if self.session_token:
+            headers["X-Gethes-Session"] = self.session_token
         return headers
 
     def _build_url(self, path: str, payload: dict[str, object] | None) -> str:
         base = self.endpoint.rstrip("/")
         url = f"{base}{path}"
-        if payload and path.endswith("/presence"):
+        if payload:
             qs = parse.urlencode(payload, doseq=False)
             if qs:
                 return f"{url}?{qs}"

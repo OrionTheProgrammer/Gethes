@@ -1,9 +1,14 @@
-from gethes.i18n import I18n
+﻿from gethes.i18n import I18n
 from gethes.syster import SysterAssistant, SysterContext
 
 
-def test_briefing_recommends_story_when_in_progress() -> None:
-    syster = SysterAssistant(mode="lite")
+def _disable_ollama(syster: SysterAssistant, monkeypatch) -> None:
+    monkeypatch.setattr(syster, "_ollama_reply", lambda _prompt, _context: None)
+
+
+def test_briefing_recommends_story_when_in_progress(monkeypatch) -> None:
+    syster = SysterAssistant(mode="local")
+    _disable_ollama(syster, monkeypatch)
     tr = I18n.from_mode("en").t
     ctx = SysterContext(
         slot_id=2,
@@ -21,8 +26,9 @@ def test_briefing_recommends_story_when_in_progress() -> None:
     assert "Recommended: `historia`." in text
 
 
-def test_briefing_recommends_roguelike_when_no_runs() -> None:
-    syster = SysterAssistant(mode="lite")
+def test_briefing_recommends_roguelike_when_no_runs(monkeypatch) -> None:
+    syster = SysterAssistant(mode="local")
+    _disable_ollama(syster, monkeypatch)
     tr = I18n.from_mode("en").t
     ctx = SysterContext(
         story_page=0,
@@ -38,16 +44,18 @@ def test_briefing_recommends_roguelike_when_no_runs() -> None:
     assert "Recommended: `roguelike`." in text
 
 
-def test_reply_diagnostics_intent() -> None:
-    syster = SysterAssistant(mode="lite")
+def test_reply_diagnostics_intent(monkeypatch) -> None:
+    syster = SysterAssistant(mode="local")
+    _disable_ollama(syster, monkeypatch)
     tr = I18n.from_mode("en").t
 
     reply = syster.reply("I got an error and need diagnostics", tr)
     assert "doctor all" in reply
 
 
-def test_reply_rogue_progress_intent() -> None:
-    syster = SysterAssistant(mode="lite")
+def test_reply_rogue_progress_intent(monkeypatch) -> None:
+    syster = SysterAssistant(mode="local")
+    _disable_ollama(syster, monkeypatch)
     tr = I18n.from_mode("en").t
     ctx = SysterContext(rogue_runs=7, rogue_wins=2, rogue_best_depth=5)
 

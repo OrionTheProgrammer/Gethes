@@ -4,7 +4,15 @@ This is the AWS-native backend option for Gethes.
 
 - Host: your Ubuntu EC2 instance
 - DB: local SQLite file on the EC2 (no Oracle wallet required)
-- Endpoints: same cloud contract (`/health`, `/v1/telemetry/heartbeat`, `/v1/telemetry/presence`)
+- Endpoints:
+  - `GET /health`
+  - `POST /v1/telemetry/heartbeat`
+  - `GET /v1/telemetry/presence`
+  - `POST /v1/auth/register`
+  - `POST /v1/auth/login`
+  - `POST /v1/auth/logout`
+  - `GET /v1/auth/me`
+  - `GET /v1/news`
 
 ## Deploy from Windows
 
@@ -13,7 +21,9 @@ This is the AWS-native backend option for Gethes.
   -HostName "ec2-xx-xx-xx-xx.compute-1.amazonaws.com" `
   -User "ubuntu" `
   -SshKeyPath "C:\Users\orion\Downloads\getheskey.pem" `
-  -Port 443
+  -Port 443 `
+  -GithubRepo "OrionTheProgrammer/Gethes" `
+  -NewsRefreshSeconds 600
 ```
 
 If you want API key auth:
@@ -35,13 +45,16 @@ curl http://127.0.0.1:8787/v1/telemetry/presence
 Inside Gethes:
 
 ```text
-cloud link http://<YOUR_PUBLIC_IP_OR_DOMAIN>:8787 <OPTIONAL_API_KEY>
+cloud status
+auth register <user> <email> <password>
 ```
 
 If your Security Group only exposes `443`, keep backend on `-Port 443` and link:
 
 ```text
 cloud link http://<YOUR_PUBLIC_IP_OR_DOMAIN>:443 <OPTIONAL_API_KEY>
+auth login <user|email> <password>
+news
 ```
 
 ## Data persisted

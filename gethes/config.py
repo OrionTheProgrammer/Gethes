@@ -8,7 +8,7 @@ import uuid
 
 GRAPHICS_LEVELS = {"low", "medium", "high"}
 LANGUAGE_MODES = {"auto", "es", "en", "pt", "fr", "de"}
-SYSTER_MODES = {"off", "lite", "lore", "hybrid"}
+SYSTER_MODES = {"local"}
 THEME_STYLE_MODES = {"terminal", "split_h", "split_v", "grid", "diagonal", "blueprint"}
 
 
@@ -30,7 +30,8 @@ class GameConfig:
     graphics: str = "medium"
     language: str = "auto"
     active_slot: int = 1
-    syster_mode: str = "lite"
+    syster_mode: str = "local"
+    syster_mode_user_set: bool = False
     syster_endpoint: str = ""
     syster_ollama_enabled: bool = True
     syster_ollama_model: str = "mistral"
@@ -45,6 +46,11 @@ class GameConfig:
     cloud_endpoint: str = ""
     cloud_api_key: str = ""
     cloud_enabled: bool = False
+    cloud_session_token: str = ""
+    cloud_auth_username: str = ""
+    cloud_auth_email: str = ""
+    cloud_sync_interval_seconds: int = 75
+    cloud_news_poll_seconds: int = 300
     freesound_api_key: str = ""
     sfx_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -111,20 +117,22 @@ class ConfigStore:
             cfg.active_slot = active_slot
 
         syster_mode = payload.get("syster_mode")
-        if isinstance(syster_mode, str) and syster_mode in SYSTER_MODES:
-            cfg.syster_mode = syster_mode
+        if isinstance(syster_mode, str):
+            # Compatibility migration: all previous modes map to local.
+            cfg.syster_mode = "local"
 
-        syster_endpoint = payload.get("syster_endpoint")
-        if isinstance(syster_endpoint, str):
-            cfg.syster_endpoint = syster_endpoint.strip()
+        syster_mode_user_set = payload.get("syster_mode_user_set")
+        if isinstance(syster_mode_user_set, bool):
+            cfg.syster_mode_user_set = syster_mode_user_set
 
         syster_ollama_enabled = payload.get("syster_ollama_enabled")
         if isinstance(syster_ollama_enabled, bool):
-            cfg.syster_ollama_enabled = syster_ollama_enabled
+            # Local AI is mandatory for Syster in current architecture.
+            cfg.syster_ollama_enabled = True
 
         syster_ollama_model = payload.get("syster_ollama_model")
         if isinstance(syster_ollama_model, str):
-            cfg.syster_ollama_model = syster_ollama_model.strip() or "mistral"
+            cfg.syster_ollama_model = "mistral"
 
         syster_ollama_host = payload.get("syster_ollama_host")
         if isinstance(syster_ollama_host, str):
@@ -133,6 +141,12 @@ class ConfigStore:
         syster_ollama_timeout = payload.get("syster_ollama_timeout")
         if isinstance(syster_ollama_timeout, (int, float)) and 1.0 <= float(syster_ollama_timeout) <= 120.0:
             cfg.syster_ollama_timeout = float(syster_ollama_timeout)
+
+        # Hard guards for runtime invariants.
+        cfg.syster_mode = "local"
+        cfg.syster_endpoint = ""
+        cfg.syster_ollama_enabled = True
+        cfg.syster_ollama_model = "mistral"
 
         update_repo = payload.get("update_repo")
         if isinstance(update_repo, str):
@@ -171,6 +185,26 @@ class ConfigStore:
         cloud_enabled = payload.get("cloud_enabled")
         if isinstance(cloud_enabled, bool):
             cfg.cloud_enabled = cloud_enabled
+
+        cloud_session_token = payload.get("cloud_session_token")
+        if isinstance(cloud_session_token, str):
+            cfg.cloud_session_token = cloud_session_token.strip()[:300]
+
+        cloud_auth_username = payload.get("cloud_auth_username")
+        if isinstance(cloud_auth_username, str):
+            cfg.cloud_auth_username = cloud_auth_username.strip()[:64]
+
+        cloud_auth_email = payload.get("cloud_auth_email")
+        if isinstance(cloud_auth_email, str):
+            cfg.cloud_auth_email = cloud_auth_email.strip().lower()[:190]
+
+        cloud_sync_interval_seconds = payload.get("cloud_sync_interval_seconds")
+        if isinstance(cloud_sync_interval_seconds, int) and 20 <= cloud_sync_interval_seconds <= 600:
+            cfg.cloud_sync_interval_seconds = cloud_sync_interval_seconds
+
+        cloud_news_poll_seconds = payload.get("cloud_news_poll_seconds")
+        if isinstance(cloud_news_poll_seconds, int) and 60 <= cloud_news_poll_seconds <= 3600:
+            cfg.cloud_news_poll_seconds = cloud_news_poll_seconds
 
         freesound_api_key = payload.get("freesound_api_key")
         if isinstance(freesound_api_key, str):
