@@ -283,6 +283,31 @@ class SysterKnowledgeStore:
             except Exception:
                 return
 
+    def get_preference(self, key: str, default: str = "") -> str:
+        token = key.strip().lower()
+        if not token:
+            return default
+        with self._lock:
+            try:
+                row = self._context.execute(
+                    """
+                    SELECT pref_value
+                    FROM preferences
+                    WHERE pref_key = ?
+                    LIMIT 1
+                    """,
+                    (token[:120],),
+                ).fetchone()
+            except Exception:
+                return default
+        if row is None:
+            return default
+        try:
+            value = str(row["pref_value"]).strip()
+        except Exception:
+            return default
+        return value or default
+
     def get_context_digest(self, *, commands_limit: int = 6, events_limit: int = 6) -> dict[str, Any]:
         digest: dict[str, Any] = {
             "recent_commands": [],
@@ -470,6 +495,103 @@ class SysterKnowledgeStore:
                 pass
         return overview
 
+    def get_cloud_training_payload(
+        self,
+        *,
+        feedback_limit: int = 6,
+        memory_limit: int = 5,
+        intents_limit: int = 6,
+    ) -> dict[str, Any]:
+        overview = self.get_training_overview()
+        payload: dict[str, Any] = {
+            "overview": overview,
+            "feedback_avg_score": 0.0,
+            "feedback_positive": 0,
+            "feedback_negative": 0,
+            "feedback_samples": [],
+            "memory_top": [],
+            "intent_top": [],
+        }
+
+        with self._lock:
+            try:
+                row = self._training.execute(
+                    """
+                    SELECT
+                        COALESCE(AVG(score), 0.0) AS avg_score,
+                        SUM(CASE WHEN score >= 0.65 THEN 1 ELSE 0 END) AS positives,
+                        SUM(CASE WHEN score <= 0.35 THEN 1 ELSE 0 END) AS negatives
+                    FROM training_feedback
+                    """
+                ).fetchone()
+                if row is not None:
+                    payload["feedback_avg_score"] = round(float(row["avg_score"] or 0.0), 4)
+                    payload["feedback_positive"] = int(row["positives"] or 0)
+                    payload["feedback_negative"] = int(row["negatives"] or 0)
+            except Exception:
+                pass
+
+            samples: list[dict[str, Any]] = []
+            try:
+                rows = self._training.execute(
+                    """
+                    SELECT id, ts, prompt, reply, score, notes
+                    FROM training_feedback
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (max(1, int(feedback_limit)),),
+                ).fetchall()
+                for row in reversed(rows):
+                    samples.append(
+                        {
+                            "local_id": int(row["id"]),
+                            "ts": float(row["ts"] or 0.0),
+                            "score": round(float(row["score"] or 0.0), 4),
+                            "notes": self._compact_cloud_text(str(row["notes"]), 180),
+                            "prompt": self._compact_cloud_text(str(row["prompt"]), 320),
+                            "reply": self._compact_cloud_text(str(row["reply"]), 320),
+                        }
+                    )
+            except Exception:
+                samples = []
+            payload["feedback_samples"] = samples
+
+            intent_rows: list[dict[str, Any]] = []
+            try:
+                rows = self._training.execute(
+                    """
+                    SELECT intent, COUNT(*) AS cnt
+                    FROM interactions
+                    WHERE intent IS NOT NULL AND TRIM(intent) <> ''
+                    GROUP BY intent
+                    ORDER BY cnt DESC
+                    LIMIT ?
+                    """,
+                    (max(1, int(intents_limit)),),
+                ).fetchall()
+                for row in rows:
+                    intent_rows.append(
+                        {
+                            "intent": self._compact_cloud_text(str(row["intent"]), 80),
+                            "count": int(row["cnt"] or 0),
+                        }
+                    )
+            except Exception:
+                intent_rows = []
+            payload["intent_top"] = intent_rows
+
+        payload["memory_top"] = [
+            {
+                "key": str(row.get("key", ""))[:120],
+                "value": self._compact_cloud_text(str(row.get("value", "")), 260),
+                "weight": round(float(row.get("weight", 0.0)), 3),
+                "source": str(row.get("source", ""))[:80],
+            }
+            for row in self.get_long_memory_entries(limit=max(1, int(memory_limit)), min_weight=0.8)
+        ]
+        return payload
+
     @staticmethod
     def _loads_safe(raw: str) -> dict[str, Any]:
         try:
@@ -479,3 +601,10 @@ class SysterKnowledgeStore:
         if isinstance(parsed, dict):
             return parsed
         return {}
+
+    @staticmethod
+    def _compact_cloud_text(value: str, limit: int) -> str:
+        token = " ".join(str(value or "").split()).strip()
+        if len(token) <= limit:
+            return token
+        return token[:limit].rstrip()

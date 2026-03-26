@@ -2,6 +2,9 @@
 
 This backend connects Gethes cloud telemetry to Oracle Autonomous Database using your wallet.
 
+If your infrastructure is pure AWS (EC2) and you do not need Oracle ADB, use:
+- [AWS_BACKEND_SETUP.md](AWS_BACKEND_SETUP.md)
+
 ## 1) Install backend dependency
 
 ```powershell
@@ -62,6 +65,9 @@ If startup takes too long, lower retries further:
 --retry-count 0 --tcp-connect-timeout 4
 ```
 
+Linux server deployment with SSH key:
+- See [LINUX_BACKEND_DEPLOY.md](LINUX_BACKEND_DEPLOY.md)
+
 ## 4) Link Gethes client to backend
 
 Inside Gethes:
@@ -76,6 +82,8 @@ cloud online
 
 Table created automatically:
 - `GETHES_TELEMETRY_PLAYERS`
+- `GETHES_SYSTER_PROFILE`
+- `GETHES_SYSTER_FEEDBACK`
 
 Stored fields include:
 - user identity (`install_id`, `player_name`)
@@ -83,6 +91,8 @@ Stored fields include:
 - Snake best stats
 - Roguelike best stats
 - profile progress and preferences
+- Syster training overview and model mode metadata
+- Recent Syster feedback samples (`prompt/reply/score/notes`) for incremental learning
 
 ## 6) Online player logic
 

@@ -29,6 +29,7 @@ def test_observe_exchange_persists_training_and_memory(tmp_path) -> None:
             score=0.9,
             notes="manual_positive",
         )
+        store.set_preference("cloud_last_sync", "123")
 
         conn = sqlite3.connect(store.training_db_path)
         try:
@@ -50,6 +51,13 @@ def test_observe_exchange_persists_training_and_memory(tmp_path) -> None:
 
         feedback = store.get_feedback_examples(limit=2, min_score=0.5)
         assert feedback
+        cloud_payload = store.get_cloud_training_payload(feedback_limit=3, memory_limit=3)
+        assert "overview" in cloud_payload
+        assert cloud_payload["overview"]["feedback"] >= 1
+        assert isinstance(cloud_payload["feedback_samples"], list)
+        assert cloud_payload["feedback_samples"]
+        assert store.get_preference("cloud_last_sync") == "123"
+        assert store.get_preference("missing_key", "fallback") == "fallback"
 
         assert store.delete_long_memory("player_name") is True
         assert store.delete_long_memory("player_name") is False

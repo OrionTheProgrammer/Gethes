@@ -405,6 +405,8 @@ class GethesApp:
         self.syster_control_running = False
         self.syster_last_prompt = ""
         self.syster_last_reply = ""
+        self.syster_auto_feedback_last_ts = 0.0
+        self.syster_auto_feedback_cooldown = 24.0
         self.terminal_passthrough = bool(getattr(self.config, "terminal_passthrough", False))
         self.terminal_exec_running = False
         self.terminal_timeout_seconds = 14
@@ -1787,6 +1789,11 @@ class GethesApp:
             source=source,
             intent=self.syster.last_intent,
         )
+        self._auto_train_syster_feedback(
+            prompt=prompt,
+            reply=visible_reply,
+            source=source,
+        )
 
         if visible_reply:
             self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
@@ -1797,6 +1804,61 @@ class GethesApp:
             self._apply_syster_control_command(control_command, source=source)
 
         return bool(visible_reply or control_command)
+
+    def _auto_train_syster_feedback(self, *, prompt: str, reply: str, source: str) -> None:
+        prompt_text = " ".join((prompt or "").split()).strip()
+        reply_text = " ".join((reply or "").split()).strip()
+        if not prompt_text or not reply_text:
+            return
+
+        now = time.monotonic()
+        if (now - self.syster_auto_feedback_last_ts) < self.syster_auto_feedback_cooldown:
+            return
+
+        score, notes = self._estimate_syster_feedback(prompt_text, reply_text, source)
+        self.syster.record_feedback(
+            prompt=prompt_text[:500],
+            reply=reply_text[:900],
+            score=score,
+            notes=notes,
+        )
+        self.syster_auto_feedback_last_ts = now
+        self._record_syster_event(
+            "syster_auto_feedback",
+            {
+                "score": round(score, 3),
+                "source": source[:24],
+                "notes": notes[:120],
+            },
+        )
+
+    def _estimate_syster_feedback(self, prompt: str, reply: str, source: str) -> tuple[float, str]:
+        score = 0.68 if source in {"player", "player_freeform"} else 0.56
+        notes: list[str] = [f"auto:{source}"]
+        lowered = reply.lower()
+
+        if len(reply) < 24:
+            score -= 0.22
+            notes.append("short_reply")
+        elif len(reply) > 820:
+            score -= 0.08
+            notes.append("long_reply")
+
+        if lowered.startswith("app.syster.") or "app.syster." in lowered:
+            score -= 0.5
+            notes.append("fallback_key")
+
+        immersion_break = any(token in lowered for token in ("ollama", "mistral", "api", "endpoint"))
+        if immersion_break:
+            score -= 0.38
+            notes.append("immersion_break")
+
+        if prompt.lower().strip() == reply.lower().strip():
+            score -= 0.25
+            notes.append("echo_like")
+
+        bounded = max(0.0, min(1.0, score))
+        return bounded, ",".join(notes)
 
     def _is_syster_control_allowed(self, command: str) -> bool:
         token = " ".join(command.lower().split())
@@ -3145,6 +3207,11 @@ class GethesApp:
 
     def _build_cloud_payload(self, reason: str) -> dict[str, object]:
         active_theme = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
+        syster_training = self.syster_store.get_cloud_training_payload(
+            feedback_limit=6,
+            memory_limit=5,
+            intents_limit=6,
+        )
         return {
             "install_id": self.config.install_id,
             "player_name": self._player_name(),
@@ -3183,6 +3250,12 @@ class GethesApp:
                     "glow": float(self.config.theme_glow_strength),
                     "particles": float(self.config.theme_particles_strength),
                 },
+            },
+            "syster": {
+                "mode": self.syster.mode,
+                "core_enabled": bool(self.syster.ollama_enabled),
+                "model": self.syster.ollama_model,
+                "training": syster_training,
             },
         }
 

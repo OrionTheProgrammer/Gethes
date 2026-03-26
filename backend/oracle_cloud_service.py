@@ -151,6 +151,184 @@ WHEN NOT MATCHED THEN
     )
 """
 
+CREATE_SYSTER_PROFILE_TABLE_SQL = """
+CREATE TABLE GETHES_SYSTER_PROFILE (
+    INSTALL_ID VARCHAR2(64) PRIMARY KEY,
+    PLAYER_NAME VARCHAR2(128) NOT NULL,
+    LAST_SYNC TIMESTAMP WITH TIME ZONE NOT NULL,
+    MODE_TAG VARCHAR2(24),
+    CORE_ENABLED NUMBER(1) DEFAULT 0,
+    MODEL_TAG VARCHAR2(128),
+    INTERACTIONS_COUNT NUMBER(18),
+    FEEDBACK_COUNT NUMBER(18),
+    LONG_MEMORY_COUNT NUMBER(18),
+    EVENTS_COUNT NUMBER(18),
+    COMMANDS_COUNT NUMBER(18),
+    SNAPSHOTS_COUNT NUMBER(18),
+    FEEDBACK_AVG_SCORE NUMBER(8,4),
+    FEEDBACK_POSITIVE NUMBER(18),
+    FEEDBACK_NEGATIVE NUMBER(18),
+    MEMORY_TOP_JSON VARCHAR2(3900),
+    INTENT_TOP_JSON VARCHAR2(3900),
+    TRAINING_META_JSON VARCHAR2(3900),
+    UPDATED_AT TIMESTAMP WITH TIME ZONE NOT NULL
+)
+"""
+
+MERGE_SYSTER_PROFILE_SQL = """
+MERGE INTO GETHES_SYSTER_PROFILE t
+USING (
+    SELECT
+        :install_id AS INSTALL_ID,
+        :player_name AS PLAYER_NAME,
+        SYSTIMESTAMP AS LAST_SYNC,
+        :mode_tag AS MODE_TAG,
+        :core_enabled AS CORE_ENABLED,
+        :model_tag AS MODEL_TAG,
+        :interactions_count AS INTERACTIONS_COUNT,
+        :feedback_count AS FEEDBACK_COUNT,
+        :long_memory_count AS LONG_MEMORY_COUNT,
+        :events_count AS EVENTS_COUNT,
+        :commands_count AS COMMANDS_COUNT,
+        :snapshots_count AS SNAPSHOTS_COUNT,
+        :feedback_avg_score AS FEEDBACK_AVG_SCORE,
+        :feedback_positive AS FEEDBACK_POSITIVE,
+        :feedback_negative AS FEEDBACK_NEGATIVE,
+        :memory_top_json AS MEMORY_TOP_JSON,
+        :intent_top_json AS INTENT_TOP_JSON,
+        :training_meta_json AS TRAINING_META_JSON
+    FROM dual
+) s
+ON (t.INSTALL_ID = s.INSTALL_ID)
+WHEN MATCHED THEN
+    UPDATE SET
+        t.PLAYER_NAME = s.PLAYER_NAME,
+        t.LAST_SYNC = s.LAST_SYNC,
+        t.MODE_TAG = s.MODE_TAG,
+        t.CORE_ENABLED = s.CORE_ENABLED,
+        t.MODEL_TAG = s.MODEL_TAG,
+        t.INTERACTIONS_COUNT = GREATEST(NVL(t.INTERACTIONS_COUNT, 0), NVL(s.INTERACTIONS_COUNT, 0)),
+        t.FEEDBACK_COUNT = GREATEST(NVL(t.FEEDBACK_COUNT, 0), NVL(s.FEEDBACK_COUNT, 0)),
+        t.LONG_MEMORY_COUNT = GREATEST(NVL(t.LONG_MEMORY_COUNT, 0), NVL(s.LONG_MEMORY_COUNT, 0)),
+        t.EVENTS_COUNT = GREATEST(NVL(t.EVENTS_COUNT, 0), NVL(s.EVENTS_COUNT, 0)),
+        t.COMMANDS_COUNT = GREATEST(NVL(t.COMMANDS_COUNT, 0), NVL(s.COMMANDS_COUNT, 0)),
+        t.SNAPSHOTS_COUNT = GREATEST(NVL(t.SNAPSHOTS_COUNT, 0), NVL(s.SNAPSHOTS_COUNT, 0)),
+        t.FEEDBACK_AVG_SCORE = s.FEEDBACK_AVG_SCORE,
+        t.FEEDBACK_POSITIVE = GREATEST(NVL(t.FEEDBACK_POSITIVE, 0), NVL(s.FEEDBACK_POSITIVE, 0)),
+        t.FEEDBACK_NEGATIVE = GREATEST(NVL(t.FEEDBACK_NEGATIVE, 0), NVL(s.FEEDBACK_NEGATIVE, 0)),
+        t.MEMORY_TOP_JSON = s.MEMORY_TOP_JSON,
+        t.INTENT_TOP_JSON = s.INTENT_TOP_JSON,
+        t.TRAINING_META_JSON = s.TRAINING_META_JSON,
+        t.UPDATED_AT = SYSTIMESTAMP
+WHEN NOT MATCHED THEN
+    INSERT (
+        INSTALL_ID,
+        PLAYER_NAME,
+        LAST_SYNC,
+        MODE_TAG,
+        CORE_ENABLED,
+        MODEL_TAG,
+        INTERACTIONS_COUNT,
+        FEEDBACK_COUNT,
+        LONG_MEMORY_COUNT,
+        EVENTS_COUNT,
+        COMMANDS_COUNT,
+        SNAPSHOTS_COUNT,
+        FEEDBACK_AVG_SCORE,
+        FEEDBACK_POSITIVE,
+        FEEDBACK_NEGATIVE,
+        MEMORY_TOP_JSON,
+        INTENT_TOP_JSON,
+        TRAINING_META_JSON,
+        UPDATED_AT
+    )
+    VALUES (
+        s.INSTALL_ID,
+        s.PLAYER_NAME,
+        s.LAST_SYNC,
+        s.MODE_TAG,
+        s.CORE_ENABLED,
+        s.MODEL_TAG,
+        s.INTERACTIONS_COUNT,
+        s.FEEDBACK_COUNT,
+        s.LONG_MEMORY_COUNT,
+        s.EVENTS_COUNT,
+        s.COMMANDS_COUNT,
+        s.SNAPSHOTS_COUNT,
+        s.FEEDBACK_AVG_SCORE,
+        s.FEEDBACK_POSITIVE,
+        s.FEEDBACK_NEGATIVE,
+        s.MEMORY_TOP_JSON,
+        s.INTENT_TOP_JSON,
+        s.TRAINING_META_JSON,
+        SYSTIMESTAMP
+    )
+"""
+
+CREATE_SYSTER_FEEDBACK_TABLE_SQL = """
+CREATE TABLE GETHES_SYSTER_FEEDBACK (
+    INSTALL_ID VARCHAR2(64) NOT NULL,
+    SAMPLE_LOCAL_ID NUMBER(18) NOT NULL,
+    PLAYER_NAME VARCHAR2(128) NOT NULL,
+    SAMPLE_TS TIMESTAMP WITH TIME ZONE NOT NULL,
+    SCORE_VALUE NUMBER(8,4),
+    NOTES_TEXT VARCHAR2(500),
+    PROMPT_TEXT VARCHAR2(1000),
+    REPLY_TEXT VARCHAR2(1000),
+    UPDATED_AT TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT GETHES_SYSTER_FEEDBACK_PK PRIMARY KEY (INSTALL_ID, SAMPLE_LOCAL_ID)
+)
+"""
+
+MERGE_SYSTER_FEEDBACK_SQL = """
+MERGE INTO GETHES_SYSTER_FEEDBACK t
+USING (
+    SELECT
+        :install_id AS INSTALL_ID,
+        :sample_local_id AS SAMPLE_LOCAL_ID,
+        :player_name AS PLAYER_NAME,
+        :sample_ts AS SAMPLE_TS,
+        :score_value AS SCORE_VALUE,
+        :notes_text AS NOTES_TEXT,
+        :prompt_text AS PROMPT_TEXT,
+        :reply_text AS REPLY_TEXT
+    FROM dual
+) s
+ON (t.INSTALL_ID = s.INSTALL_ID AND t.SAMPLE_LOCAL_ID = s.SAMPLE_LOCAL_ID)
+WHEN MATCHED THEN
+    UPDATE SET
+        t.PLAYER_NAME = s.PLAYER_NAME,
+        t.SAMPLE_TS = s.SAMPLE_TS,
+        t.SCORE_VALUE = s.SCORE_VALUE,
+        t.NOTES_TEXT = s.NOTES_TEXT,
+        t.PROMPT_TEXT = s.PROMPT_TEXT,
+        t.REPLY_TEXT = s.REPLY_TEXT,
+        t.UPDATED_AT = SYSTIMESTAMP
+WHEN NOT MATCHED THEN
+    INSERT (
+        INSTALL_ID,
+        SAMPLE_LOCAL_ID,
+        PLAYER_NAME,
+        SAMPLE_TS,
+        SCORE_VALUE,
+        NOTES_TEXT,
+        PROMPT_TEXT,
+        REPLY_TEXT,
+        UPDATED_AT
+    )
+    VALUES (
+        s.INSTALL_ID,
+        s.SAMPLE_LOCAL_ID,
+        s.PLAYER_NAME,
+        s.SAMPLE_TS,
+        s.SCORE_VALUE,
+        s.NOTES_TEXT,
+        s.PROMPT_TEXT,
+        s.REPLY_TEXT,
+        SYSTIMESTAMP
+    )
+"""
+
 
 def sanitize_name(value: str) -> str:
     merged = " ".join(value.strip().split())
@@ -210,6 +388,20 @@ def _as_float(value: object, default: float = 1.0) -> float:
     return default
 
 
+def _as_bool_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if int(value) != 0 else 0
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return 1
+        if token in {"0", "false", "no", "off"}:
+            return 0
+    return default
+
+
 class OracleTelemetryStore:
     def __init__(
         self,
@@ -265,16 +457,165 @@ class OracleTelemetryStore:
             return code
         return 0
 
-    def _ensure_schema(self) -> None:
+    def _execute_ddl(self, cursor: "oracledb.Cursor", sql: str) -> None:
         try:
-            with self.pool.acquire() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(CREATE_TABLE_SQL)
-                conn.commit()
+            cursor.execute(sql)
         except Exception as exc:
             if self._oracle_code(exc) == 955:
                 return
             raise
+
+    def _ensure_schema(self) -> None:
+        with self.pool.acquire() as conn:
+            with conn.cursor() as cur:
+                self._execute_ddl(cur, CREATE_TABLE_SQL)
+                self._execute_ddl(cur, CREATE_SYSTER_PROFILE_TABLE_SQL)
+                self._execute_ddl(cur, CREATE_SYSTER_FEEDBACK_TABLE_SQL)
+            conn.commit()
+
+    @staticmethod
+    def _compact_text(value: object, limit: int) -> str:
+        merged = " ".join(str(value or "").split()).strip()
+        if len(merged) <= limit:
+            return merged
+        return merged[:limit].rstrip()
+
+    def _compact_json(self, value: object, limit: int = 3900) -> str:
+        try:
+            raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            raw = "{}"
+        return self._compact_text(raw, limit)
+
+    def _upsert_syster_profile(
+        self,
+        cursor: "oracledb.Cursor",
+        *,
+        install_id: str,
+        player_name: str,
+        syster_payload: dict[str, object],
+    ) -> bool:
+        training = (
+            syster_payload.get("training")
+            if isinstance(syster_payload.get("training"), dict)
+            else {}
+        )
+        overview = (
+            training.get("overview")
+            if isinstance(training.get("overview"), dict)
+            else {}
+        )
+        memory_top = (
+            training.get("memory_top")
+            if isinstance(training.get("memory_top"), list)
+            else []
+        )
+        intent_top = (
+            training.get("intent_top")
+            if isinstance(training.get("intent_top"), list)
+            else []
+        )
+        binds = {
+            "install_id": install_id,
+            "player_name": player_name,
+            "mode_tag": self._compact_text(syster_payload.get("mode", ""), 24),
+            "core_enabled": _as_bool_int(syster_payload.get("core_enabled"), 0),
+            "model_tag": self._compact_text(syster_payload.get("model", ""), 128),
+            "interactions_count": _as_int(overview.get("interactions")),
+            "feedback_count": _as_int(overview.get("feedback")),
+            "long_memory_count": _as_int(overview.get("long_memory")),
+            "events_count": _as_int(overview.get("events")),
+            "commands_count": _as_int(overview.get("commands")),
+            "snapshots_count": _as_int(overview.get("snapshots")),
+            "feedback_avg_score": round(_as_float(training.get("feedback_avg_score"), 0.0), 4),
+            "feedback_positive": _as_int(training.get("feedback_positive")),
+            "feedback_negative": _as_int(training.get("feedback_negative")),
+            "memory_top_json": self._compact_json(memory_top[:8], 3900),
+            "intent_top_json": self._compact_json(intent_top[:8], 3900),
+            "training_meta_json": self._compact_json(
+                {
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "mode": syster_payload.get("mode", ""),
+                    "model": syster_payload.get("model", ""),
+                    "feedback_avg_score": round(_as_float(training.get("feedback_avg_score"), 0.0), 4),
+                    "feedback_positive": _as_int(training.get("feedback_positive")),
+                    "feedback_negative": _as_int(training.get("feedback_negative")),
+                },
+                3900,
+            ),
+        }
+        cursor.execute(MERGE_SYSTER_PROFILE_SQL, binds)
+        return True
+
+    def _upsert_syster_feedback_samples(
+        self,
+        cursor: "oracledb.Cursor",
+        *,
+        install_id: str,
+        player_name: str,
+        syster_payload: dict[str, object],
+    ) -> int:
+        training = (
+            syster_payload.get("training")
+            if isinstance(syster_payload.get("training"), dict)
+            else {}
+        )
+        samples = (
+            training.get("feedback_samples")
+            if isinstance(training.get("feedback_samples"), list)
+            else []
+        )
+        if not samples:
+            return 0
+
+        now_utc = datetime.now(timezone.utc)
+        ingested = 0
+        for item in samples[:20]:
+            if not isinstance(item, dict):
+                continue
+            local_id = _as_int(item.get("local_id"))
+            if local_id <= 0:
+                continue
+
+            ts_value = _as_float(item.get("ts"), 0.0)
+            try:
+                sample_ts = (
+                    datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                    if ts_value > 0.0
+                    else now_utc
+                )
+            except Exception:
+                sample_ts = now_utc
+
+            binds = {
+                "install_id": install_id,
+                "sample_local_id": local_id,
+                "player_name": player_name,
+                "sample_ts": sample_ts,
+                "score_value": round(_as_float(item.get("score"), 0.0), 4),
+                "notes_text": self._compact_text(item.get("notes", ""), 500),
+                "prompt_text": self._compact_text(item.get("prompt", ""), 1000),
+                "reply_text": self._compact_text(item.get("reply", ""), 1000),
+            }
+            cursor.execute(MERGE_SYSTER_FEEDBACK_SQL, binds)
+            ingested += 1
+        return ingested
+
+    def syster_global_summary(self) -> dict[str, object]:
+        summary = {"samples": 0, "avg_score": 0.0}
+        with self.pool.acquire() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS sample_count, COALESCE(AVG(SCORE_VALUE), 0)
+                    FROM GETHES_SYSTER_FEEDBACK
+                    """
+                )
+                row = cur.fetchone()
+                if row:
+                    summary["samples"] = _as_int(row[0])
+                    summary["avg_score"] = round(_as_float(row[1], 0.0), 4)
+        return summary
 
     def heartbeat(self, payload: dict[str, object]) -> dict[str, object]:
         install_id = str(payload.get("install_id", "")).strip().lower().replace("-", "")[:64]
@@ -286,6 +627,7 @@ class OracleTelemetryStore:
         profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
         scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
         prefs = payload.get("preferences") if isinstance(payload.get("preferences"), dict) else {}
+        syster_payload = payload.get("syster") if isinstance(payload.get("syster"), dict) else {}
 
         binds = {
             "install_id": install_id,
@@ -311,17 +653,37 @@ class OracleTelemetryStore:
             "theme_name": str(prefs.get("theme", ""))[:64],
         }
 
+        syster_profile_synced = False
+        syster_feedback_ingested = 0
         with self.pool.acquire() as conn:
             with conn.cursor() as cur:
                 cur.execute(MERGE_SQL, binds)
+                if syster_payload:
+                    syster_profile_synced = self._upsert_syster_profile(
+                        cur,
+                        install_id=install_id,
+                        player_name=player_name,
+                        syster_payload=syster_payload,
+                    )
+                    syster_feedback_ingested = self._upsert_syster_feedback_samples(
+                        cur,
+                        install_id=install_id,
+                        player_name=player_name,
+                        syster_payload=syster_payload,
+                    )
             conn.commit()
 
         online, users = self.presence()
+        syster_global = self.syster_global_summary()
         return {
             "ok": True,
             "message": "synced",
             "players_online": online,
             "registered_users": users,
+            "syster_profile_synced": bool(syster_profile_synced),
+            "syster_feedback_ingested": int(syster_feedback_ingested),
+            "syster_global_samples": int(syster_global.get("samples", 0) or 0),
+            "syster_global_avg_score": float(syster_global.get("avg_score", 0.0) or 0.0),
             "server_time_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
@@ -365,10 +727,19 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             try:
                 online, users = self.store.presence()
+                syster = self.store.syster_global_summary()
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
                 return
-            self._send_json(HTTPStatus.OK, {"players_online": online, "registered_users": users})
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "players_online": online,
+                    "registered_users": users,
+                    "syster_global_samples": int(syster.get("samples", 0) or 0),
+                    "syster_global_avg_score": float(syster.get("avg_score", 0.0) or 0.0),
+                },
+            )
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "not_found"})
 

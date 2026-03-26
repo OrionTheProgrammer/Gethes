@@ -1,6 +1,6 @@
 ﻿"""Proyecto Gethes: videojuego interactivo en consola simulada."""
 
-__version__ = "0.05"
+__version__ = "0.06"
 
 __all__ = [
     "app",

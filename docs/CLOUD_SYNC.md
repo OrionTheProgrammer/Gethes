@@ -8,7 +8,8 @@ Allow Gethes clients to sync:
 - current players (presence/online),
 - player usernames,
 - best scores (`snake`, `roguelike`),
-- user preferences (graphics, language, UI scale, theme).
+- user preferences (graphics, language, UI scale, theme),
+- Syster training summary and recent feedback samples.
 
 ## Client commands
 
@@ -37,7 +38,7 @@ Presence endpoint:
   "install_id": "8cf2660df3524f7abf0d32eb7c44ef6b",
   "player_name": "Orion",
   "reason": "manual_sync",
-  "version": "0.05",
+  "version": "0.06",
   "timestamp_unix": 1772688000,
   "profile": {
     "slot_id": 1,
@@ -69,6 +70,46 @@ Presence endpoint:
       "glow": 1.22,
       "particles": 1.2
     }
+  },
+  "syster": {
+    "mode": "hybrid",
+    "core_enabled": true,
+    "model": "mistral",
+    "training": {
+      "overview": {
+        "interactions": 2400,
+        "feedback": 980,
+        "long_memory": 9,
+        "events": 412,
+        "commands": 338,
+        "snapshots": 47
+      },
+      "feedback_avg_score": 0.79,
+      "feedback_positive": 730,
+      "feedback_negative": 58,
+      "feedback_samples": [
+        {
+          "local_id": 1732,
+          "ts": 1772688123.0,
+          "score": 1.0,
+          "notes": "auto:player",
+          "prompt": "Estoy bloqueado en historia, dame una pista.",
+          "reply": "Busca el archivo roto antes de abrir la puerta principal."
+        }
+      ],
+      "memory_top": [
+        {
+          "key": "persona_tone",
+          "value": "melancolico, preciso, inmersivo, empatico",
+          "weight": 3.3,
+          "source": "curriculum"
+        }
+      ],
+      "intent_top": [
+        {"intent": "story", "count": 125},
+        {"intent": "rogue", "count": 93}
+      ]
+    }
   }
 }
 ```
@@ -80,7 +121,11 @@ Presence endpoint:
   "ok": true,
   "message": "synced",
   "players_online": 14,
-  "registered_users": 112
+  "registered_users": 112,
+  "syster_profile_synced": true,
+  "syster_feedback_ingested": 6,
+  "syster_global_samples": 4280,
+  "syster_global_avg_score": 0.77
 }
 ```
 
@@ -89,9 +134,18 @@ Presence endpoint:
 ```json
 {
   "players_online": 14,
-  "registered_users": 112
+  "registered_users": 112,
+  "syster_global_samples": 4280,
+  "syster_global_avg_score": 0.77
 }
 ```
+
+## Extra Oracle tables
+
+The Oracle backend now maintains:
+- `GETHES_TELEMETRY_PLAYERS`
+- `GETHES_SYSTER_PROFILE`
+- `GETHES_SYSTER_FEEDBACK`
 
 ## Minimal DB model (SQL)
 
