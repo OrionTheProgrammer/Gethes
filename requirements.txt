@@ -1,6 +1,6 @@
 pygame-ce>=2.5.7
 pyconify>=0.2.1
-freesound-python>=1.1
+freesound-python>=0.1,<2
 watchdog>=4.0
 pytweening>=1.2.0
 pygame-menu>=4.5.2
