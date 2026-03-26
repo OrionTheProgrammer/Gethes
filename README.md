@@ -34,7 +34,7 @@ El proyecto esta pensado para que cada sesion se sienta como una exploracion de 
 
 ## Estado del proyecto
 
-- Version actual: `v0.06`
+- Version actual: `v0.07`
 - Estado: desarrollo activo
 - Plataforma principal: Windows
 - Distribucion recomendada: instalador (`Setup`) publicado en Releases
