@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import get_close_matches
@@ -16,6 +16,7 @@ from typing import Callable
 
 from gethes import __version__
 from gethes.achievements import ACHIEVEMENTS, BY_ID, is_unlocked, unlocked_count
+from gethes.application import CommandRouter, DomainSupervisor
 from gethes.audio import AudioManager
 from gethes.cloud_sync import CloudSyncClient
 from gethes.config import (
@@ -35,6 +36,7 @@ from gethes.games.roguelike import RoguelikeGame
 from gethes.games.snake import SnakeGame
 from gethes.games.tictactoe import TicTacToeGame
 from gethes.i18n import I18n
+from gethes.domain.resilience import DomainFailureEvent, DomainPolicy, DomainState
 from gethes.mod_watcher import ModWatcher
 from gethes.runtime_paths import resource_package_dir, user_data_dir
 from gethes.schema_validation import validate_theme_payload
@@ -261,6 +263,9 @@ BUILTIN_THEME_PRESETS: dict[str, ThemePreset] = {
     ),
 }
 DEFAULT_UPDATE_REPO = "OrionTheProgrammer/Gethes"
+DEFAULT_CLOUD_ENDPOINT = "http://ec2-44-205-252-139.compute-1.amazonaws.com:443"
+DEFAULT_CLOUD_SYNC_INTERVAL_SECONDS = 75
+DEFAULT_CLOUD_NEWS_POLL_SECONDS = 300
 SYSTER_ENABLED = True
 SFX_EVENT_ALIASES: dict[str, str] = {
     "msg": "message",
@@ -274,6 +279,14 @@ SFX_EVENT_ALIASES: dict[str, str] = {
     "logro": "achievement",
     "logros": "achievement",
 }
+DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
+    DomainPolicy(name="ui", max_consecutive_failures=1, cooldown_seconds=2.0),
+    DomainPolicy(name="update", max_consecutive_failures=2, cooldown_seconds=5.0),
+    DomainPolicy(name="cloud", max_consecutive_failures=2, cooldown_seconds=12.0),
+    DomainPolicy(name="games", max_consecutive_failures=2, cooldown_seconds=8.0),
+    DomainPolicy(name="syster", max_consecutive_failures=2, cooldown_seconds=10.0),
+    DomainPolicy(name="mods", max_consecutive_failures=2, cooldown_seconds=6.0),
+)
 
 
 class GethesApp:
@@ -292,25 +305,63 @@ class GethesApp:
 
         self.config_store = ConfigStore(self.storage_dir / "gethes_config.json")
         self.config = self.config_store.load()
+        default_cloud_endpoint = (
+            os.getenv("GETHES_CLOUD_ENDPOINT", "").strip() or DEFAULT_CLOUD_ENDPOINT
+        )
+        if not self.config.cloud_endpoint and default_cloud_endpoint:
+            self.config.cloud_endpoint = default_cloud_endpoint
+        if self.config.cloud_endpoint.strip():
+            self.config.cloud_enabled = True
+        self.config.cloud_sync_interval_seconds = max(
+            20,
+            min(
+                600,
+                int(self.config.cloud_sync_interval_seconds or DEFAULT_CLOUD_SYNC_INTERVAL_SECONDS),
+            ),
+        )
+        self.config.cloud_news_poll_seconds = max(
+            60,
+            min(
+                3600,
+                int(self.config.cloud_news_poll_seconds or DEFAULT_CLOUD_NEWS_POLL_SECONDS),
+            ),
+        )
         self.i18n = I18n.from_mode(self.config.language)
         self.audio = AudioManager(enabled=self.config.sound)
         self.sfx_service = FreesoundSFXService(api_key=self.config.freesound_api_key)
         self.cloud = CloudSyncClient(
             endpoint=self.config.cloud_endpoint,
             api_key=self.config.cloud_api_key,
+            session_token=self.config.cloud_session_token,
         )
         if self.cloud.is_linked():
             # Cloud sync is background-only when endpoint is configured.
             self.config.cloud_enabled = True
+        self.ui: ConsoleUI | None = None
+        self._pending_domain_notices: list[str] = []
+        self.domain_supervisor = DomainSupervisor(
+            policies=DOMAIN_POLICIES,
+            on_failure=self._on_domain_failure,
+        )
         self.input_handler: Callable[[str], None] | None = None
         self.update_events: queue.Queue[tuple[str, dict[str, object]]] = queue.Queue()
         self.mod_watcher: ModWatcher | None = None
         self.mod_reload_times: dict[str, float] = {"theme": 0.0, "story": 0.0}
         self.theme_mod_errors: list[str] = []
         self.awaiting_player_name = False
+        self.awaiting_cloud_auth_setup = False
+        self.cloud_auth_setup_stage = ""
+        self.cloud_auth_pending: dict[str, str] = {}
+        self.cloud_auth_running = False
+        self.cloud_auth_user: dict[str, str] = {}
         self.cloud_sync_running = False
-        self.cloud_sync_cooldown = 75.0
+        self.cloud_sync_cooldown = float(self.config.cloud_sync_interval_seconds)
         self.cloud_sync_elapsed = 0.0
+        self.cloud_news_running = False
+        self.cloud_news_elapsed = 0.0
+        self.cloud_news_cooldown = float(self.config.cloud_news_poll_seconds)
+        self.cloud_last_news_at = 0.0
+        self.cloud_seen_news_keys: set[str] = set()
         self.cloud_last_status = "idle"
         self.cloud_last_message = ""
         self.cloud_last_presence: dict[str, object] = {}
@@ -354,10 +405,10 @@ class GethesApp:
 
         self.syster_enabled = SYSTER_ENABLED
         self.syster = SysterAssistant(
-            mode=self.config.syster_mode,
-            remote_endpoint=self.config.syster_endpoint or None,
-            ollama_enabled=self.config.syster_ollama_enabled,
-            ollama_model=self.config.syster_ollama_model,
+            mode="local",
+            remote_endpoint=None,
+            ollama_enabled=True,
+            ollama_model="mistral",
             ollama_host=self.config.syster_ollama_host,
             ollama_timeout=self.config.syster_ollama_timeout,
             package_dir=self.package_dir,
@@ -365,14 +416,16 @@ class GethesApp:
             knowledge_store=self.syster_store,
         )
         if not self.syster_enabled:
-            self.syster.set_mode("off")
+            self.syster.set_mode("local")
             self.syster.set_remote_endpoint(None)
-            self.syster.set_ollama_enabled(False)
+            self.syster.set_ollama_enabled(True)
         else:
             self.syster.warmup_local_ai()
-        self.config.syster_mode = self.syster.mode
-        if not self.syster_enabled:
-            self.config.syster_endpoint = ""
+        self.config.syster_mode = "local"
+        self.config.syster_mode_user_set = True
+        self.config.syster_endpoint = ""
+        self.config.syster_ollama_enabled = True
+        self.config.syster_ollama_model = "mistral"
 
         self.ui = ConsoleUI(
             title=self.tr("ui.title"),
@@ -381,6 +434,7 @@ class GethesApp:
         self.ui.on_close = self._shutdown
         self.ui.on_idle = self._on_idle
         self.ui.set_audio(self.audio)
+        self._flush_domain_notices()
         self._ensure_modding_templates()
         self.theme_presets = self._load_theme_presets()
         self._start_mod_watcher()
@@ -398,6 +452,7 @@ class GethesApp:
         self.idle_count = 0
         self.intro_active = False
         self.last_command = "menu"
+        self.syster_auto_enabled = False
         self.syster_auto_pending = False
         self.syster_last_auto_ts = 0.0
         self.syster_auto_cooldown = 7.0
@@ -411,6 +466,11 @@ class GethesApp:
         self.terminal_exec_running = False
         self.terminal_timeout_seconds = 14
         self.terminal_output_limit = 150
+
+        if self.config.cloud_auth_username.strip():
+            self.cloud_auth_user["username"] = self.config.cloud_auth_username.strip()
+        if self.config.cloud_auth_email.strip():
+            self.cloud_auth_user["email"] = self.config.cloud_auth_email.strip()
 
         self._migrate_legacy_theme()
         self._sync_theme_visual_profile()
@@ -426,34 +486,111 @@ class GethesApp:
         self.codebreaker = CodeBreakerGame(self)
         self.physics_lab = PhysicsLabGame(self)
         self.roguelike = RoguelikeGame(self)
+        self.command_router = self._build_command_router()
+        self._known_aliases_set = set(self.command_router.aliases)
+        self._known_aliases_sorted = sorted(self._known_aliases_set)
 
     def tr(self, key: str, **kwargs: object) -> str:
         return self.i18n.t(key, **kwargs)
 
+    def _on_domain_failure(self, event: DomainFailureEvent) -> None:
+        if event.state == DomainState.OPEN:
+            notice = self.tr(
+                "app.domain.failure_open",
+                domain=event.domain,
+                action=event.action,
+                error=f"{event.error_type}: {event.error_message}",
+            )
+        else:
+            notice = self.tr(
+                "app.domain.failure_degraded",
+                domain=event.domain,
+                action=event.action,
+                error=f"{event.error_type}: {event.error_message}",
+            )
+
+        ui = self.ui
+        if ui is None:
+            self._pending_domain_notices.append(notice)
+            return
+
+        try:
+            ui.write(notice)
+            ui.set_status(self.tr("app.domain.status_degraded", domain=event.domain))
+        except Exception:
+            self._pending_domain_notices.append(notice)
+
+    def _flush_domain_notices(self) -> None:
+        if self.ui is None:
+            return
+        pending = list(self._pending_domain_notices)
+        self._pending_domain_notices.clear()
+        for notice in pending:
+            try:
+                self.ui.write(notice)
+            except Exception:
+                break
+
+    def _run_domain(
+        self,
+        domain: str,
+        action: str,
+        operation: Callable[[], object],
+        *,
+        fallback: object | None = None,
+    ) -> object | None:
+        return self.domain_supervisor.call(domain, action, operation, fallback=fallback)
+
+    def _show_domain_health(self) -> None:
+        self.ui.write(self.tr("app.domain.health.title"))
+        for item in self.domain_supervisor.snapshots():
+            self.ui.write(
+                self.tr(
+                    "app.domain.health.item",
+                    domain=item.domain,
+                    state=item.state.value.upper(),
+                    failures=item.total_failures,
+                    streak=item.failure_streak,
+                    skipped=item.skipped_calls,
+                )
+            )
+            if item.last_error:
+                self.ui.write(
+                    self.tr(
+                        "app.domain.health.last_error",
+                        domain=item.domain,
+                        error=item.last_error[:160],
+                    )
+                )
+
     def run(self) -> None:
-        self._start_intro_sequence()
-        self.ui.run(update_callback=self._update)
+        self._run_domain("ui", "intro_sequence", self._start_intro_sequence)
+        self._run_domain("ui", "main_loop", lambda: self.ui.run(update_callback=self._update))
 
     def _update(self, dt: float) -> None:
-        self._process_update_events()
+        self._run_domain("update", "event_pump", self._process_update_events)
         if self.intro_active:
-            if self.ui.update_intro(dt):
+            intro_done = bool(
+                self._run_domain("ui", "intro_update", lambda: self.ui.update_intro(dt), fallback=False)
+            )
+            if intro_done:
                 self.intro_active = False
-                self._start_boot_sequence()
+                self._run_domain("ui", "boot_start", self._start_boot_sequence)
             return
         if self.boot_active:
-            self._update_boot(dt)
+            self._run_domain("ui", "boot_update", lambda: self._update_boot(dt))
             return
 
-        self._update_cloud_autosync(dt)
+        self._run_domain("cloud", "autosync_tick", lambda: self._update_cloud_autosync(dt))
+        self._run_domain("cloud", "news_tick", lambda: self._update_cloud_news_poll(dt))
         if self.snake.active:
-            self.snake.update(dt)
+            self._run_domain("games", "snake_tick", lambda: self.snake.update(dt))
         if self.physics_lab.active:
-            self.physics_lab.update(dt)
+            self._run_domain("games", "physics_tick", lambda: self.physics_lab.update(dt))
         if self.roguelike.active:
-            self.roguelike.update(dt)
+            self._run_domain("games", "rogue_tick", lambda: self.roguelike.update(dt))
         if self.syster_enabled:
-            self._update_syster_autochat()
+            self._run_domain("syster", "autochat_tick", self._update_syster_autochat)
 
     def set_input_handler(self, handler: Callable[[str], None]) -> None:
         self.input_handler = handler
@@ -1325,6 +1462,9 @@ class GethesApp:
         ):
             return
 
+        if not self.syster_auto_enabled:
+            return
+
         if self.syster_enabled and self._trigger_syster_auto("idle"):
             return
 
@@ -1334,6 +1474,124 @@ class GethesApp:
             self.ui.write(self.tr("app.idle.help"))
         self.audio.play("message")
         self.idle_count += 1
+
+    def _build_command_router(self) -> CommandRouter:
+        router = CommandRouter()
+
+        def add_noargs(aliases: set[str], action: Callable[[], None]) -> None:
+            router.add_many(aliases, lambda _args, _raw_command, _parts: action())
+
+        def add_args(aliases: set[str], action: Callable[[list[str]], None]) -> None:
+            router.add_many(aliases, lambda args, _raw_command, _parts: action(args))
+
+        def start_snake() -> None:
+            self._clear_daily_session()
+            self._run_domain("games", "snake_start", lambda: self.snake.start())
+
+        def start_roguelike() -> None:
+            self._clear_daily_session()
+            self._run_domain("games", "rogue_start", lambda: self.roguelike.start())
+
+        def save_config_feedback() -> None:
+            self._save_config()
+            self.ui.write(self.tr("app.config_saved"))
+
+        add_noargs({"help", "ayuda", "ajuda", "?"}, lambda: self.ui.write(self._help_text()))
+        add_noargs({"clear", "cls"}, self.ui.clear)
+        add_noargs({"menu", "inicio", "home"}, lambda: self.ui.set_screen(self._welcome_text()))
+        add_noargs({"vmenu", "menuui", "visualmenu"}, lambda: self.ui.write(self.tr("app.vmenu_removed")))
+
+        add_noargs({"snake"}, start_snake)
+        add_noargs(
+            {"ahorcado1", "hangman1"},
+            lambda: self._run_domain(
+                "games",
+                "hangman_single_start",
+                lambda: self.hangman.start_single_player(),
+            ),
+        )
+        add_noargs(
+            {"ahorcado2", "hangman2"},
+            lambda: self._run_domain(
+                "games",
+                "hangman_dual_start",
+                lambda: self.hangman.start_two_player(),
+            ),
+        )
+        add_noargs(
+            {"historia", "story"},
+            lambda: self._run_domain("games", "story_start", lambda: self.story.start()),
+        )
+        add_noargs(
+            {"gato", "tictactoe", "ttt"},
+            lambda: self._run_domain("games", "tictactoe_start", lambda: self.tictactoe.start()),
+        )
+        add_noargs(
+            {"codigo", "codebreaker", "mastermind"},
+            lambda: self._run_domain("games", "codebreaker_start", lambda: self.codebreaker.start()),
+        )
+        add_noargs(
+            {"physics", "lab", "physicslab"},
+            lambda: self._run_domain("games", "physics_start", lambda: self.physics_lab.start()),
+        )
+        add_noargs({"roguelike", "rogelike", "rogue", "dungeon"}, start_roguelike)
+
+        add_args({"daily", "reto", "desafio"}, self._handle_daily)
+        add_noargs({"opciones", "options", "opcoes"}, lambda: self.ui.write(self._options_text()))
+        add_args({"doctor", "diag", "diagnostic"}, self._handle_doctor)
+        add_noargs({"health", "domains", "dominios"}, self._show_domain_health)
+        add_noargs({"modsreload"}, lambda: self._handle_mods(["reload"]))
+        add_args({"mods"}, self._handle_mods)
+        add_noargs({"logros", "achievements", "ach"}, self._show_achievements)
+        add_noargs({"slots"}, self._show_slots)
+        add_args({"slot"}, self._switch_slot)
+        add_args({"slotname"}, self._rename_slot)
+        add_args({"user", "username", "usuario", "nome", "player"}, self._handle_user)
+        add_noargs({"savegame"}, lambda: self._save_current_slot(user_feedback=True))
+        add_args(
+            {"syster"},
+            lambda args: self._run_domain("syster", "command", lambda: self._handle_syster(args)),
+        )
+        add_args({"sound"}, self._set_sound)
+        add_args({"graphics"}, self._set_graphics)
+        add_args({"uiscale", "ui-scale", "scaleui"}, self._set_ui_scale)
+        add_args({"theme"}, self._set_theme)
+        add_args({"bg"}, lambda args: self._set_single_color(args, key="bg"))
+        add_args({"fg"}, lambda args: self._set_single_color(args, key="fg"))
+        add_args({"font"}, self._set_font)
+        add_args({"fonts"}, self._list_fonts)
+        add_args({"lang", "language", "idioma", "lingua"}, self._set_language)
+        add_args({"update", "actualizar", "atualizar"}, self._handle_update)
+        add_args({"assets"}, self._handle_assets)
+        add_args({"cloud", "nube", "nuvem"}, self._handle_cloud)
+        add_args({"auth", "account", "cuenta"}, self._handle_auth)
+        add_args({"register", "registro"}, lambda args: self._handle_auth(["register", *args]))
+        add_args({"login", "signin", "iniciar"}, lambda args: self._handle_auth(["login", *args]))
+        add_noargs({"logout", "cerrarsesion"}, lambda: self._handle_auth(["logout"]))
+        add_args({"news", "noticias"}, lambda args: self._handle_cloud(["news", *args]))
+        add_args({"sfx"}, self._handle_sfx)
+        add_noargs({"save"}, save_config_feedback)
+
+        def handle_terminal(args: list[str], raw_command: str, _parts: list[str]) -> None:
+            self._handle_terminal(args, command=raw_command)
+
+        def handle_sh(_args: list[str], raw_command: str, parts: list[str]) -> None:
+            shell_command = raw_command.split(None, 1)[1].strip() if len(parts) > 1 else ""
+            self._run_terminal_command(shell_command, from_passthrough=False)
+
+        def handle_secret(_args: list[str], _raw_command: str, parts: list[str]) -> None:
+            alias = parts[0].lower() if parts else "creator"
+            self._trigger_secret(alias)
+
+        def handle_exit(_args: list[str], _raw_command: str, _parts: list[str]) -> None:
+            self._shutdown()
+            self.ui.request_quit()
+
+        router.add_many({"terminal", "term"}, handle_terminal)
+        router.add_many({"sh", "shell"}, handle_sh)
+        router.add_many({"creator", "orion", "gethes"}, handle_secret)
+        router.add_many({"exit", "salir", "sair", "quit"}, handle_exit)
+        return router
 
     def _on_command(self, raw_command: str) -> None:
         if self.input_handler is not None:
@@ -1381,293 +1639,33 @@ class GethesApp:
             if not self.syster_control_running:
                 self._queue_syster_auto_from_command(cmd)
 
-        if cmd in {"help", "ayuda", "ajuda", "?"}:
-            self.ui.write(self._help_text())
+        if self.command_router.dispatch(cmd, args, command, parts):
             return
 
-        if cmd in {"clear", "cls"}:
-            self.ui.clear()
-            return
-
-        if cmd in {"menu", "inicio", "home"}:
-            self.ui.set_screen(self._welcome_text())
-            return
-
-        if cmd in {"vmenu", "menuui", "visualmenu"}:
-            self.ui.write(self.tr("app.vmenu_removed"))
-            return
-
-        if cmd == "snake":
-            self._clear_daily_session()
-            self.snake.start()
-            return
-
-        if cmd in {"ahorcado1", "hangman1"}:
-            self.hangman.start_single_player()
-            return
-
-        if cmd in {"ahorcado2", "hangman2"}:
-            self.hangman.start_two_player()
-            return
-
-        if cmd in {"historia", "story"}:
-            self.story.start()
-            return
-
-        if cmd in {"gato", "tictactoe", "ttt"}:
-            self.tictactoe.start()
-            return
-
-        if cmd in {"codigo", "codebreaker", "mastermind"}:
-            self.codebreaker.start()
-            return
-
-        if cmd in {"physics", "lab", "physicslab"}:
-            self.physics_lab.start()
-            return
-
-        if cmd in {"roguelike", "rogelike", "rogue", "dungeon"}:
-            self._clear_daily_session()
-            self.roguelike.start()
-            return
-
-        if cmd in {"daily", "reto", "desafio"}:
-            self._handle_daily(args)
-            return
-
-        if cmd in {"opciones", "options", "opcoes"}:
-            self.ui.write(self._options_text())
-            return
-
-        if cmd in {"doctor", "diag", "diagnostic"}:
-            self._handle_doctor(args)
-            return
-
-        if cmd in {"terminal", "term"}:
-            self._handle_terminal(args, command=command)
-            return
-
-        if cmd in {"sh", "shell"}:
-            shell_command = command.split(None, 1)[1].strip() if len(parts) > 1 else ""
-            self._run_terminal_command(shell_command, from_passthrough=False)
-            return
-
-        if cmd == "modsreload":
-            self._handle_mods(["reload"])
-            return
-
-        if cmd == "mods":
-            self._handle_mods(args)
-            return
-
-        if cmd in {"logros", "achievements", "ach"}:
-            self._show_achievements()
-            return
-
-        if cmd == "slots":
-            self._show_slots()
-            return
-
-        if cmd == "slot":
-            self._switch_slot(args)
-            return
-
-        if cmd == "slotname":
-            self._rename_slot(args)
-            return
-
-        if cmd in {"user", "username", "usuario", "nome", "player"}:
-            self._handle_user(args)
-            return
-
-        if cmd == "savegame":
-            self._save_current_slot(user_feedback=True)
-            return
-
-        if cmd == "syster":
-            self._handle_syster(args)
-            return
-
-        if cmd in {"creator", "orion", "gethes"}:
-            self._trigger_secret(cmd)
-            return
-
-        if cmd == "sound":
-            self._set_sound(args)
-            return
-
-        if cmd == "graphics":
-            self._set_graphics(args)
-            return
-
-        if cmd in {"uiscale", "ui-scale", "scaleui"}:
-            self._set_ui_scale(args)
-            return
-
-        if cmd == "theme":
-            self._set_theme(args)
-            return
-
-        if cmd == "bg":
-            self._set_single_color(args, key="bg")
-            return
-
-        if cmd == "fg":
-            self._set_single_color(args, key="fg")
-            return
-
-        if cmd == "font":
-            self._set_font(args)
-            return
-
-        if cmd == "fonts":
-            self._list_fonts(args)
-            return
-
-        if cmd in {"lang", "language", "idioma", "lingua"}:
-            self._set_language(args)
-            return
-
-        if cmd in {"update", "actualizar", "atualizar"}:
-            self._handle_update(args)
-            return
-
-        if cmd == "assets":
-            self._handle_assets(args)
-            return
-
-        if cmd in {"cloud", "nube", "nuvem"}:
-            self.ui.write(self.tr("app.cloud.auto_info"))
-            return
-
-        if cmd == "sfx":
-            self._handle_sfx(args)
-            return
-
-        if cmd == "save":
-            self._save_config()
-            self.ui.write(self.tr("app.config_saved"))
-            return
-
-        if cmd in {"exit", "salir", "sair", "quit"}:
-            self._shutdown()
-            self.ui.request_quit()
-            return
-
-        if self.terminal_passthrough and not force_internal:
-            self._run_terminal_command(command, from_passthrough=True)
-            return
-
-        suggestion = self._suggest_command_alias(cmd)
-        if suggestion:
-            self.ui.write(self.tr("app.unknown_suggest", cmd=cmd, suggestion=suggestion))
-            return
-
-        if self.syster_enabled and self.syster.mode != "off":
-            if self._emit_syster_response(command, source="player_freeform"):
+        if cmd not in self._known_aliases_set:
+            if self.terminal_passthrough and not force_internal:
+                self._run_terminal_command(command, from_passthrough=True)
                 return
 
-        self.ui.write(self.tr("app.unknown", cmd=cmd))
+            suggestion = self._suggest_command_alias(cmd)
+            if suggestion:
+                self.ui.write(self.tr("app.unknown_suggest", cmd=cmd, suggestion=suggestion))
+                return
 
-    @staticmethod
-    def _known_command_aliases() -> set[str]:
-        return {
-            "help",
-            "ayuda",
-            "ajuda",
-            "?",
-            "clear",
-            "cls",
-            "menu",
-            "inicio",
-            "home",
-            "vmenu",
-            "menuui",
-            "visualmenu",
-            "snake",
-            "ahorcado1",
-            "hangman1",
-            "ahorcado2",
-            "hangman2",
-            "historia",
-            "story",
-            "gato",
-            "tictactoe",
-            "ttt",
-            "codigo",
-            "codebreaker",
-            "mastermind",
-            "physics",
-            "lab",
-            "physicslab",
-            "roguelike",
-            "rogelike",
-            "rogue",
-            "dungeon",
-            "daily",
-            "reto",
-            "desafio",
-            "opciones",
-            "options",
-            "opcoes",
-            "doctor",
-            "diag",
-            "diagnostic",
-            "terminal",
-            "term",
-            "sh",
-            "shell",
-            "modsreload",
-            "mods",
-            "logros",
-            "achievements",
-            "ach",
-            "slots",
-            "slot",
-            "slotname",
-            "user",
-            "username",
-            "usuario",
-            "nome",
-            "player",
-            "savegame",
-            "syster",
-            "creator",
-            "orion",
-            "gethes",
-            "sound",
-            "graphics",
-            "uiscale",
-            "ui-scale",
-            "scaleui",
-            "theme",
-            "bg",
-            "fg",
-            "font",
-            "fonts",
-            "lang",
-            "language",
-            "idioma",
-            "lingua",
-            "update",
-            "actualizar",
-            "atualizar",
-            "assets",
-            "sfx",
-            "save",
-            "exit",
-            "salir",
-            "sair",
-            "quit",
-        }
+            if self.syster_enabled and self.syster.mode == "local":
+                if self._emit_syster_response(command, source="player_freeform"):
+                    return
+
+            self.ui.write(self.tr("app.unknown", cmd=cmd))
+            return
 
     def _suggest_command_alias(self, cmd: str) -> str:
         token = cmd.strip().lower()
         if not token:
             return ""
 
-        aliases = sorted(self._known_command_aliases())
-        if token in aliases:
+        aliases = self._known_aliases_sorted
+        if token in self._known_aliases_set:
             return ""
 
         if rapid_process is not None:
@@ -1685,9 +1683,11 @@ class GethesApp:
         return ""
 
     def _queue_syster_auto_from_command(self, cmd: str) -> None:
+        if not self.syster_auto_enabled:
+            return
         if not self.syster_enabled:
             return
-        if self.syster.mode == "off":
+        if self.syster.mode != "local":
             return
         if cmd in {"syster", "save", "savegame", "exit", "salir", "sair", "quit"}:
             return
@@ -1698,6 +1698,8 @@ class GethesApp:
             self.syster_auto_pending = True
 
     def _update_syster_autochat(self) -> None:
+        if not self.syster_auto_enabled:
+            return
         if not self.syster_enabled:
             return
         if not self.syster_auto_pending:
@@ -1738,9 +1740,11 @@ class GethesApp:
         return "help"
 
     def _trigger_syster_auto(self, trigger: str) -> bool:
+        if not self.syster_auto_enabled:
+            return False
         if not self.syster_enabled:
             return False
-        if self.syster.mode == "off":
+        if self.syster.mode != "local":
             return False
         if (
             self.intro_active
@@ -1764,11 +1768,17 @@ class GethesApp:
 
     def _emit_syster_response(self, prompt: str, *, source: str) -> bool:
         context = self._build_syster_context()
-        raw_reply = self.syster.reply(
-            prompt,
-            lambda key, **kwargs: self.tr(key, **kwargs),
-            context=context,
+        raw_reply_obj = self._run_domain(
+            "syster",
+            "reply",
+            lambda: self.syster.reply(
+                prompt,
+                lambda key, **kwargs: self.tr(key, **kwargs),
+                context=context,
+            ),
+            fallback="",
         )
+        raw_reply = str(raw_reply_obj or "")
         if not raw_reply.strip():
             return False
 
@@ -2029,19 +2039,26 @@ class GethesApp:
             return
 
         if action == "mode":
-            if len(args) != 2:
-                self.ui.write(self.tr("app.syster.mode_usage"))
+            if len(args) == 2 and args[1].strip().lower() == "local":
+                self.syster.set_mode("local")
+                self.config.syster_mode = "local"
+                self.config.syster_ollama_enabled = True
+                self.config.syster_ollama_model = "mistral"
+                self.config.syster_endpoint = ""
+                self.config.syster_mode_user_set = True
+                self._save_config()
+                self.ui.write(self.tr("app.syster.mode_set", mode="local"))
                 return
-            mode = args[1].lower()
-            if mode not in SYSTER_MODES:
-                self.ui.write(self.tr("app.syster.mode_invalid"))
-                return
-            self.syster.set_mode(mode)
-            self.config.syster_mode = mode
+            self.ui.write(self.tr("app.syster.mode_local_only"))
+            self.ui.write(self.tr("app.syster.mode_usage"))
+            return
+
+        if action == "endpoint":
+            self.ui.write(self.tr("app.syster.endpoint_local_only"))
+            self.config.syster_endpoint = ""
+            self.syster.set_remote_endpoint(None)
+            self.config.syster_mode_user_set = True
             self._save_config()
-            self.ui.write(self.tr("app.syster.mode_set", mode=mode))
-            if mode == "hybrid" and not self.syster.has_remote_endpoint() and not self.syster.ollama_enabled:
-                self.ui.write(self.tr("app.syster.hybrid_fallback"))
             return
 
         if action == "core":
@@ -2050,31 +2067,6 @@ class GethesApp:
 
         if action == "train":
             self._handle_syster_train(args[1:])
-            return
-
-        if action == "endpoint":
-            if len(args) == 1:
-                value = self.syster.remote_endpoint or "-"
-                self.ui.write(self.tr("app.syster.endpoint_status", value=value))
-                return
-
-            endpoint = " ".join(args[1:]).strip()
-            if endpoint.lower() in {"off", "none", "reset", "clear"}:
-                self.syster.set_remote_endpoint(None)
-                self.config.syster_endpoint = ""
-                self._save_config()
-                self.ui.write(self.tr("app.syster.endpoint_cleared"))
-                return
-
-            if not endpoint.startswith(("http://", "https://")):
-                self.ui.write(self.tr("app.syster.endpoint_invalid"))
-                self.ui.write(self.tr("app.syster.endpoint_usage"))
-                return
-
-            self.syster.set_remote_endpoint(endpoint)
-            self.config.syster_endpoint = endpoint
-            self._save_config()
-            self.ui.write(self.tr("app.syster.endpoint_set", value=endpoint))
             return
 
         if action == "secret":
@@ -2144,36 +2136,25 @@ class GethesApp:
         if action in {"on", "enable"}:
             self.syster.set_ollama_enabled(True)
             self.config.syster_ollama_enabled = True
-            if self.syster.mode == "off":
-                self.syster.set_mode("hybrid")
-                self.config.syster_mode = self.syster.mode
+            self.syster.set_mode("local")
+            self.config.syster_mode = "local"
+            self.config.syster_ollama_model = "mistral"
             self._save_config()
             self.ui.write(self.tr("app.syster.ollama.on"))
             self._show_syster_core_status(force_probe=True)
             return
 
         if action in {"off", "disable"}:
-            self.syster.set_ollama_enabled(False)
-            self.config.syster_ollama_enabled = False
-            self._save_config()
-            self.ui.write(self.tr("app.syster.ollama.off"))
+            self.syster.set_ollama_enabled(True)
+            self.config.syster_ollama_enabled = True
+            self.ui.write(self.tr("app.syster.ollama.off_blocked"))
             return
 
         if action == "model":
-            if len(args) == 1:
-                self.ui.write(
-                    self.tr("app.syster.ollama.model_status", model=self.syster.ollama_model)
-                )
-                self.ui.write(self.tr("app.syster.ollama.model_usage"))
-                return
-            model = " ".join(args[1:]).strip()
-            if not model:
-                self.ui.write(self.tr("app.syster.ollama.model_usage"))
-                return
-            self.syster.set_ollama_model(model)
-            self.config.syster_ollama_model = self.syster.ollama_model
+            self.syster.set_ollama_model("mistral")
+            self.config.syster_ollama_model = "mistral"
             self._save_config()
-            self.ui.write(self.tr("app.syster.ollama.model_set", model=self.syster.ollama_model))
+            self.ui.write(self.tr("app.syster.ollama.model_locked", model="mistral"))
             return
 
         if action == "host":
@@ -2318,20 +2299,7 @@ class GethesApp:
             return
 
         if action == "forget":
-            if len(args) != 2:
-                self.ui.write(self.tr("app.syster.train.forget_usage"))
-                return
-            raw_key = args[1].strip().lower()
-            key = "".join(ch for ch in raw_key if ch.isalnum() or ch in {"_", "-", "."})
-            if not key:
-                self.ui.write(self.tr("app.syster.train.forget_usage"))
-                return
-            removed = self.syster_store.delete_long_memory(key[:120])
-            if removed:
-                self._record_syster_event("syster_memory_forget", {"key": key[:120]})
-                self.ui.write(self.tr("app.syster.train.forget_done", key=key[:120]))
-            else:
-                self.ui.write(self.tr("app.syster.train.forget_missing", key=key[:120]))
+            self.ui.write(self.tr("app.syster.train.forget_blocked"))
             return
 
         if not self.syster_last_prompt or not self.syster_last_reply:
@@ -2507,6 +2475,17 @@ class GethesApp:
 
         if section in {"all", "system"}:
             self.ui.write(self.tr("app.doctor.paths", storage=str(self.storage_dir), updates=str(self.update_download_dir)))
+            for item in self.domain_supervisor.snapshots():
+                self.ui.write(
+                    self.tr(
+                        "app.doctor.domain",
+                        domain=item.domain,
+                        state=item.state.value.upper(),
+                        failures=item.total_failures,
+                        streak=item.failure_streak,
+                        skipped=item.skipped_calls,
+                    )
+                )
 
     def _handle_sfx(self, args: list[str]) -> None:
         if not args:
@@ -3128,7 +3107,11 @@ class GethesApp:
                 self.ui.write(self.tr("app.cloud.endpoint_invalid"))
                 self.ui.write(self.tr("app.cloud.link_usage"))
                 return
-            self.cloud.configure(normalized, token or self.config.cloud_api_key)
+            self.cloud.configure(
+                normalized,
+                token or self.config.cloud_api_key,
+                self.config.cloud_session_token,
+            )
             self.config.cloud_endpoint = self.cloud.endpoint
             if token:
                 self.config.cloud_api_key = token
@@ -3136,12 +3119,18 @@ class GethesApp:
             self._save_config()
             self.ui.write(self.tr("app.cloud.linked", endpoint=self.cloud.endpoint))
             self._queue_cloud_sync(reason="cloud_link", force=True)
+            if not self.cloud.has_session():
+                self.ui.write(self.tr("app.cloud.auth_hint"))
             return
 
         if action in {"off", "unlink", "disable"}:
-            self.cloud.configure("", "")
+            self.cloud.configure("", "", "")
             self.config.cloud_endpoint = ""
             self.config.cloud_enabled = False
+            self.config.cloud_session_token = ""
+            self.config.cloud_auth_username = ""
+            self.config.cloud_auth_email = ""
+            self.cloud_auth_user = {}
             self._save_config()
             self.ui.write(self.tr("app.cloud.disabled"))
             return
@@ -3152,12 +3141,12 @@ class GethesApp:
                 return
             value = " ".join(args[1:]).strip()
             if value.lower() in {"off", "none", "clear"}:
-                self.cloud.configure(self.cloud.endpoint, "")
+                self.cloud.configure(self.cloud.endpoint, "", self.cloud.session_token)
                 self.config.cloud_api_key = ""
                 self._save_config()
                 self.ui.write(self.tr("app.cloud.key_cleared"))
                 return
-            self.cloud.configure(self.cloud.endpoint, value)
+            self.cloud.configure(self.cloud.endpoint, value, self.cloud.session_token)
             self.config.cloud_api_key = value
             self._save_config()
             self.ui.write(self.tr("app.cloud.key_set", value=self.cloud.masked_key()))
@@ -3177,6 +3166,61 @@ class GethesApp:
             self._queue_cloud_presence(user_feedback=True)
             return
 
+        if action in {"interval", "every", "timer"}:
+            if len(args) < 2:
+                self.ui.write(self.tr("app.cloud.interval_usage"))
+                return
+            raw = args[1].strip().replace(",", ".")
+            if not raw.isdigit():
+                self.ui.write(self.tr("app.cloud.interval_invalid"))
+                return
+            seconds = int(raw)
+            if seconds < 20 or seconds > 600:
+                self.ui.write(self.tr("app.cloud.interval_range"))
+                return
+            self.config.cloud_sync_interval_seconds = seconds
+            self.cloud_sync_cooldown = float(seconds)
+            self.cloud_sync_elapsed = 0.0
+            self._save_config()
+            self.ui.write(self.tr("app.cloud.interval_set", seconds=seconds))
+            return
+
+        if action in {"newsinterval", "feedinterval"}:
+            if len(args) < 2:
+                self.ui.write(self.tr("app.cloud.news_interval_usage"))
+                return
+            raw = args[1].strip().replace(",", ".")
+            if not raw.isdigit():
+                self.ui.write(self.tr("app.cloud.news_interval_invalid"))
+                return
+            seconds = int(raw)
+            if seconds < 60 or seconds > 3600:
+                self.ui.write(self.tr("app.cloud.news_interval_range"))
+                return
+            self.config.cloud_news_poll_seconds = seconds
+            self.cloud_news_cooldown = float(seconds)
+            self.cloud_news_elapsed = 0.0
+            self._save_config()
+            self.ui.write(self.tr("app.cloud.news_interval_set", seconds=seconds))
+            return
+
+        if action in {"news", "feed"}:
+            limit = 8
+            if len(args) >= 2 and args[1].strip().isdigit():
+                limit = max(1, min(30, int(args[1].strip())))
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            if not self.cloud.has_session():
+                self.ui.write(self.tr("app.auth.not_logged"))
+                return
+            self._queue_cloud_news(limit=limit, mark_seen=True, user_feedback=True)
+            return
+
+        if action in {"auth", "account"}:
+            self._handle_auth(args[1:])
+            return
+
         self.ui.write(self.tr("app.cloud.usage"))
 
     def _show_cloud_status(self) -> None:
@@ -3188,6 +3232,20 @@ class GethesApp:
                 endpoint=(self.cloud.endpoint or "-"),
                 api_key=self.cloud.masked_key(),
                 state=self.cloud_last_status,
+            )
+        )
+        self.ui.write(
+            self.tr(
+                "app.cloud.auth_state",
+                state=("ON" if self.cloud.has_session() else "OFF"),
+                user=(self.config.cloud_auth_username or "-"),
+            )
+        )
+        self.ui.write(
+            self.tr(
+                "app.cloud.intervals",
+                sync=self.config.cloud_sync_interval_seconds,
+                news=self.config.cloud_news_poll_seconds,
             )
         )
         if self.cloud_last_message:
@@ -3205,6 +3263,193 @@ class GethesApp:
             self.ui.write(self.tr("app.cloud.presence", online=online, users=users))
         self.ui.write(self.tr("app.cloud.usage"))
 
+    @staticmethod
+    def _sanitize_auth_username(raw: str) -> str:
+        value = raw.strip()
+        if not value:
+            return ""
+        cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"_", "-", "."})
+        return cleaned[:24]
+
+    @staticmethod
+    def _sanitize_auth_email(raw: str) -> str:
+        token = raw.strip().lower()
+        if len(token) > 190:
+            return ""
+        if "@" not in token or "." not in token:
+            return ""
+        local, _, domain = token.partition("@")
+        if not local or not domain or "." not in domain:
+            return ""
+        return token
+
+    def _show_auth_status(self) -> None:
+        logged = self.cloud.has_session() and bool(self.config.cloud_auth_username.strip())
+        self.ui.write(
+            self.tr(
+                "app.auth.status",
+                state=("ON" if logged else "OFF"),
+                username=(self.config.cloud_auth_username or "-"),
+                email=(self.config.cloud_auth_email or "-"),
+            )
+        )
+        self.ui.write(self.tr("app.auth.usage"))
+
+    def _handle_auth(self, args: list[str]) -> None:
+        action = args[0].strip().lower() if args else "status"
+
+        if action in {"status", "state"}:
+            self._show_auth_status()
+            return
+
+        if action in {"setup", "onboarding"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            if self.cloud.has_session():
+                self.ui.write(self.tr("app.auth.me_ok", username=self.config.cloud_auth_username or "-"))
+                return
+            self._start_cloud_auth_setup()
+            return
+
+        if action in {"me", "whoami"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            if not self.cloud.has_session():
+                self.ui.write(self.tr("app.auth.not_logged"))
+                return
+            self._queue_cloud_auth(action="me", user_feedback=True)
+            return
+
+        if action in {"register", "signup"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            if len(args) < 4:
+                self.ui.write(self.tr("app.auth.register_usage"))
+                return
+            username = self._sanitize_auth_username(args[1])
+            email = self._sanitize_auth_email(args[2])
+            password = " ".join(args[3:]).strip()
+            if not username:
+                self.ui.write(self.tr("app.auth.username_invalid"))
+                return
+            if not email:
+                self.ui.write(self.tr("app.auth.email_invalid"))
+                return
+            if len(password) < 8:
+                self.ui.write(self.tr("app.auth.password_invalid"))
+                return
+            if not self._queue_cloud_auth(
+                action="register",
+                username=username,
+                email=email,
+                password=password,
+                user_feedback=True,
+            ):
+                self.ui.write(self.tr("app.auth.busy"))
+            return
+
+        if action in {"login", "signin"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            if len(args) < 3:
+                self.ui.write(self.tr("app.auth.login_usage"))
+                return
+            login = args[1].strip()
+            password = " ".join(args[2:]).strip()
+            if not login or len(password) < 8:
+                self.ui.write(self.tr("app.auth.login_usage"))
+                return
+            if not self._queue_cloud_auth(
+                action="login",
+                login=login,
+                password=password,
+                user_feedback=True,
+            ):
+                self.ui.write(self.tr("app.auth.busy"))
+            return
+
+        if action in {"logout", "off"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+            if not self.cloud.has_session():
+                self.ui.write(self.tr("app.auth.not_logged"))
+                return
+            if not self._queue_cloud_auth(action="logout", user_feedback=True):
+                self.ui.write(self.tr("app.auth.busy"))
+            return
+
+        self.ui.write(self.tr("app.auth.usage"))
+
+    def _queue_cloud_auth(
+        self,
+        *,
+        action: str,
+        username: str = "",
+        email: str = "",
+        login: str = "",
+        password: str = "",
+        user_feedback: bool = False,
+        from_setup: bool = False,
+    ) -> bool:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if self.cloud_auth_running:
+            return False
+
+        self.cloud_auth_running = True
+        if user_feedback:
+            if action == "register":
+                self.ui.write(self.tr("app.auth.registering"))
+            elif action == "login":
+                self.ui.write(self.tr("app.auth.logging_in"))
+            elif action == "logout":
+                self.ui.write(self.tr("app.auth.logging_out"))
+            elif action == "me":
+                self.ui.write(self.tr("app.auth.checking"))
+
+        def worker() -> None:
+            if action == "register":
+                response = self.cloud.register(
+                    username=username,
+                    email=email,
+                    password=password,
+                    install_id=self.config.install_id,
+                )
+            elif action == "login":
+                response = self.cloud.login(
+                    login=login,
+                    password=password,
+                    install_id=self.config.install_id,
+                )
+            elif action == "logout":
+                response = self.cloud.logout()
+            elif action == "me":
+                response = self.cloud.fetch_me()
+            else:
+                response = self.cloud.fetch_me()
+            self.update_events.put(
+                (
+                    "cloud_auth_done",
+                    {
+                        "ok": response.ok,
+                        "status_code": response.status_code,
+                        "message": response.message,
+                        "payload": response.payload,
+                        "action": action,
+                        "user_feedback": user_feedback,
+                        "from_setup": from_setup,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name=f"gethes-cloud-auth-{action}").start()
+        return True
+
     def _build_cloud_payload(self, reason: str) -> dict[str, object]:
         active_theme = self._detect_theme_name(self.config.bg_color, self.config.fg_color)
         syster_training = self.syster_store.get_cloud_training_payload(
@@ -3212,7 +3457,7 @@ class GethesApp:
             memory_limit=5,
             intents_limit=6,
         )
-        return {
+        payload: dict[str, object] = {
             "install_id": self.config.install_id,
             "player_name": self._player_name(),
             "reason": reason,
@@ -3258,6 +3503,12 @@ class GethesApp:
                 "training": syster_training,
             },
         }
+        if self.cloud.has_session() and self.config.cloud_auth_username.strip():
+            payload["auth_user"] = {
+                "username": self.config.cloud_auth_username.strip(),
+                "email": self.config.cloud_auth_email.strip(),
+            }
+        return payload
 
     def _queue_cloud_sync(
         self,
@@ -3266,6 +3517,8 @@ class GethesApp:
         user_feedback: bool = False,
     ) -> bool:
         if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if self.cloud_auth_running:
             return False
         if self.cloud_sync_running:
             return False
@@ -3298,6 +3551,8 @@ class GethesApp:
     def _queue_cloud_presence(self, user_feedback: bool = False) -> bool:
         if not self.config.cloud_enabled or not self.cloud.is_linked():
             return False
+        if self.cloud_auth_running:
+            return False
         if self.cloud_sync_running:
             return False
         self.cloud_sync_running = True
@@ -3322,10 +3577,48 @@ class GethesApp:
         threading.Thread(target=worker, daemon=True, name="gethes-cloud-presence").start()
         return True
 
+    def _queue_cloud_news(
+        self,
+        *,
+        limit: int = 8,
+        mark_seen: bool = False,
+        user_feedback: bool = False,
+    ) -> bool:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if not self.cloud.has_session():
+            return False
+        if self.cloud_news_running or self.cloud_auth_running:
+            return False
+        self.cloud_news_running = True
+        if user_feedback:
+            self.ui.write(self.tr("app.cloud.news_query"))
+
+        def worker() -> None:
+            response = self.cloud.fetch_news(limit=limit, mark_seen=mark_seen, repo=self.update_manager.repo)
+            self.update_events.put(
+                (
+                    "cloud_news_done",
+                    {
+                        "ok": response.ok,
+                        "status_code": response.status_code,
+                        "message": response.message,
+                        "payload": response.payload,
+                        "user_feedback": user_feedback,
+                        "mark_seen": mark_seen,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-cloud-news").start()
+        return True
+
     def _update_cloud_autosync(self, dt: float) -> None:
         if not self.config.cloud_enabled or not self.cloud.is_linked():
             return
         if self.awaiting_player_name:
+            return
+        if self.awaiting_cloud_auth_setup:
             return
         if self.input_handler is not None:
             return
@@ -3337,6 +3630,24 @@ class GethesApp:
             return
         self.cloud_sync_elapsed = 0.0
         self._queue_cloud_sync(reason="autosync")
+
+    def _update_cloud_news_poll(self, dt: float) -> None:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return
+        if not self.cloud.has_session():
+            return
+        if self.awaiting_player_name or self.awaiting_cloud_auth_setup:
+            return
+        if self.input_handler is not None:
+            return
+        if self.snake.active or self.physics_lab.active or self.roguelike.active:
+            return
+
+        self.cloud_news_elapsed += dt
+        if self.cloud_news_elapsed < self.cloud_news_cooldown:
+            return
+        self.cloud_news_elapsed = 0.0
+        self._queue_cloud_news(limit=6, mark_seen=False, user_feedback=False)
 
     def _record_syster_command(self, raw_command: str, outcome: str = "") -> None:
         self.syster_store.record_command(raw_command, outcome=outcome)
@@ -4230,23 +4541,23 @@ class GethesApp:
                 return
 
             if event == "check_result":
-                self._consume_update_check_result(payload)
+                self._run_domain("update", "consume_check_result", lambda: self._consume_update_check_result(payload))
                 continue
 
             if event == "install_downloaded":
-                self._consume_update_downloaded(payload)
+                self._run_domain("update", "consume_install_downloaded", lambda: self._consume_update_downloaded(payload))
                 continue
 
             if event == "download_prepared":
-                self._consume_update_prepared(payload)
+                self._run_domain("update", "consume_download_prepared", lambda: self._consume_update_prepared(payload))
                 continue
 
             if event == "install_failed":
-                self._consume_update_install_failed(payload)
+                self._run_domain("update", "consume_install_failed", lambda: self._consume_update_install_failed(payload))
                 continue
 
             if event == "download_progress":
-                self._consume_update_progress(payload)
+                self._run_domain("update", "consume_download_progress", lambda: self._consume_update_progress(payload))
                 continue
 
             if event == "download_verifying":
@@ -4254,19 +4565,27 @@ class GethesApp:
                 continue
 
             if event == "mod_change":
-                self._consume_mod_change(payload)
+                self._run_domain("mods", "consume_mod_change", lambda: self._consume_mod_change(payload))
                 continue
 
             if event == "cloud_sync_done":
-                self._consume_cloud_sync_done(payload)
+                self._run_domain("cloud", "consume_sync_done", lambda: self._consume_cloud_sync_done(payload))
                 continue
 
             if event == "cloud_presence_done":
-                self._consume_cloud_presence_done(payload)
+                self._run_domain("cloud", "consume_presence_done", lambda: self._consume_cloud_presence_done(payload))
+                continue
+
+            if event == "cloud_auth_done":
+                self._run_domain("cloud", "consume_auth_done", lambda: self._consume_cloud_auth_done(payload))
+                continue
+
+            if event == "cloud_news_done":
+                self._run_domain("cloud", "consume_news_done", lambda: self._consume_cloud_news_done(payload))
                 continue
 
             if event == "terminal_result":
-                self._consume_terminal_result(payload)
+                self._run_domain("ui", "consume_terminal_result", lambda: self._consume_terminal_result(payload))
                 continue
 
     def _consume_update_progress(self, payload: dict[str, object]) -> None:
@@ -4369,6 +4688,156 @@ class GethesApp:
 
         if user_feedback:
             self.ui.write(self.tr("app.cloud.sync_failed", error=(message or "network_error")))
+
+    def _consume_cloud_auth_done(self, payload: dict[str, object]) -> None:
+        self.cloud_auth_running = False
+        ok = bool(payload.get("ok", False))
+        message = str(payload.get("message", "")).strip()
+        action = str(payload.get("action", "")).strip().lower()
+        data = payload.get("payload")
+        user_feedback = bool(payload.get("user_feedback", False))
+        from_setup = bool(payload.get("from_setup", False))
+
+        if ok and isinstance(data, dict):
+            if action == "logout":
+                self.cloud.clear_session()
+                self.config.cloud_session_token = ""
+                self.config.cloud_auth_username = ""
+                self.config.cloud_auth_email = ""
+                self.cloud_auth_user = {}
+            else:
+                session_token = str(data.get("session_token", "")).strip()
+                if session_token:
+                    self.cloud.set_session(session_token)
+                    self.config.cloud_session_token = session_token
+                username = self._sanitize_auth_username(str(data.get("username", "")))
+                email = self._sanitize_auth_email(str(data.get("email", "")))
+                if username:
+                    self.config.cloud_auth_username = username
+                    self.cloud_auth_user["username"] = username
+                if email:
+                    self.config.cloud_auth_email = email
+                    self.cloud_auth_user["email"] = email
+
+            self.cloud_last_status = "ok"
+            self.cloud_last_message = message or "ok"
+            self.cloud_sync_elapsed = 0.0
+            self.cloud_news_elapsed = 0.0
+            self._save_config()
+
+            if action in {"register", "login", "me"}:
+                self._queue_cloud_sync(reason=f"auth_{action}", force=True)
+            if action in {"register", "login"}:
+                self.ui.push_notification(
+                    self.tr("app.auth.toast_title"),
+                    self.tr(
+                        "app.auth.toast_body",
+                        username=(self.config.cloud_auth_username or self._player_name()),
+                    ),
+                    icon_key="mdi:account",
+                )
+            if user_feedback:
+                if action == "register":
+                    self.ui.write(self.tr("app.auth.register_ok", username=self.config.cloud_auth_username))
+                elif action == "login":
+                    self.ui.write(self.tr("app.auth.login_ok", username=self.config.cloud_auth_username))
+                elif action == "logout":
+                    self.ui.write(self.tr("app.auth.logout_ok"))
+                else:
+                    self.ui.write(self.tr("app.auth.me_ok", username=self.config.cloud_auth_username))
+
+            if from_setup:
+                self._finish_cloud_auth_setup(success=True)
+            return
+
+        self.cloud_last_status = "error"
+        self.cloud_last_message = message or "auth_error"
+        if action in {"me", "logout"} and message in {"invalid_session", "not_authenticated"}:
+            self.cloud.clear_session()
+            self.config.cloud_session_token = ""
+            self.config.cloud_auth_username = ""
+            self.config.cloud_auth_email = ""
+            self.cloud_auth_user = {}
+            self._save_config()
+            if not from_setup and not self.awaiting_player_name and self.input_handler is None:
+                self._start_cloud_auth_setup()
+        if from_setup:
+            self._resume_cloud_auth_setup_after_error(message or "auth_error")
+        if user_feedback:
+            self.ui.write(self.tr("app.auth.failed", error=(message or "auth_error")))
+
+    def _consume_cloud_news_done(self, payload: dict[str, object]) -> None:
+        self.cloud_news_running = False
+        self.cloud_last_news_at = time.monotonic()
+        ok = bool(payload.get("ok", False))
+        message = str(payload.get("message", "")).strip()
+        data = payload.get("payload")
+        user_feedback = bool(payload.get("user_feedback", False))
+
+        if not ok:
+            self.cloud_last_status = "error"
+            self.cloud_last_message = message or "network_error"
+            if message == "invalid_session":
+                self.cloud.clear_session()
+                self.config.cloud_session_token = ""
+                self.config.cloud_auth_username = ""
+                self.config.cloud_auth_email = ""
+                self.cloud_auth_user = {}
+                self._save_config()
+                if not self.awaiting_player_name and self.input_handler is None:
+                    self._start_cloud_auth_setup()
+            if user_feedback:
+                self.ui.write(self.tr("app.cloud.news_failed", error=(message or "network_error")))
+            return
+
+        self.cloud_last_status = "ok"
+        self.cloud_last_message = message or "ok"
+        if not isinstance(data, dict):
+            if user_feedback:
+                self.ui.write(self.tr("app.cloud.news_empty"))
+            return
+
+        raw_items = data.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        unread = int(data.get("unread", 0) or 0)
+        new_unseen: list[dict[str, object]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key", "")).strip()
+            if not key:
+                continue
+            if key in self.cloud_seen_news_keys:
+                continue
+            self.cloud_seen_news_keys.add(key)
+            if not bool(item.get("seen", False)):
+                new_unseen.append(item)
+
+        if not user_feedback and new_unseen:
+            first = new_unseen[0]
+            title = str(first.get("title", "")).strip() or self.tr("app.cloud.news_generic")
+            self.ui.push_notification(
+                self.tr("app.cloud.news_toast_title"),
+                self.tr("app.cloud.news_toast_body", title=title[:72]),
+                icon_key="mdi:information-outline",
+            )
+
+        if user_feedback:
+            if not items:
+                self.ui.write(self.tr("app.cloud.news_empty"))
+                return
+            self.ui.write(self.tr("app.cloud.news_count", unread=unread, total=len(items)))
+            for item in items[:8]:
+                if not isinstance(item, dict):
+                    continue
+                self.ui.write(
+                    self.tr(
+                        "app.cloud.news_item",
+                        kind=str(item.get("type", "news")).upper(),
+                        title=(str(item.get("title", "")).strip() or self.tr("app.cloud.news_generic")),
+                        url=(str(item.get("url", "")).strip() or "-"),
+                    )
+                )
 
     def _consume_update_check_result(self, payload: dict[str, object]) -> None:
         self.update_check_running = False
@@ -4711,10 +5180,19 @@ class GethesApp:
 
     def _save_config(self) -> None:
         self.config.active_slot = self.current_slot.slot_id
-        self.config.syster_mode = self.syster.mode
-        self.config.syster_endpoint = self.syster.remote_endpoint
-        self.config.syster_ollama_enabled = self.syster.ollama_enabled
-        self.config.syster_ollama_model = self.syster.ollama_model
+        self.config.syster_mode = "local"
+        self.config.syster_mode_user_set = True
+        self.config.syster_endpoint = ""
+        self.config.syster_ollama_enabled = True
+        self.config.syster_ollama_model = "mistral"
+        if self.syster.mode != "local":
+            self.syster.set_mode("local")
+        if self.syster.remote_endpoint:
+            self.syster.set_remote_endpoint(None)
+        if not self.syster.ollama_enabled:
+            self.syster.set_ollama_enabled(True)
+        if self.syster.ollama_model != "mistral":
+            self.syster.set_ollama_model("mistral")
         self.config.syster_ollama_host = self.syster.ollama_host
         self.config.syster_ollama_timeout = self.syster.ollama_timeout
         self.config.update_repo = self.update_manager.repo
@@ -4727,6 +5205,15 @@ class GethesApp:
                 continue
             clean_overrides[event] = normalized_name
         self.config.sfx_overrides = clean_overrides
+        self.config.cloud_endpoint = self.cloud.endpoint
+        self.config.cloud_api_key = self.cloud.api_key
+        self.config.cloud_session_token = self.cloud.session_token
+        if self.cloud_auth_user.get("username"):
+            self.config.cloud_auth_username = str(self.cloud_auth_user["username"]).strip()
+        if self.cloud_auth_user.get("email"):
+            self.config.cloud_auth_email = str(self.cloud_auth_user["email"]).strip().lower()
+        self.config.cloud_sync_interval_seconds = int(max(20, min(600, round(self.cloud_sync_cooldown))))
+        self.config.cloud_news_poll_seconds = int(max(60, min(3600, round(self.cloud_news_cooldown))))
         self.config_store.save(self.config)
 
     def _shutdown(self) -> None:
@@ -4916,9 +5403,24 @@ class GethesApp:
 
         self.config.player_name = name
         self._apply_player_identity()
+        self._save_config()
+        self._on_identity_ready(sync_reason="boot")
+
+    def _on_identity_ready(self, sync_reason: str) -> None:
         self.ui.set_screen(self._welcome_text())
         self.ui.set_status(self.tr("ui.help_hint"))
-        self._queue_cloud_sync(reason="boot", force=True)
+        self._queue_cloud_sync(reason=sync_reason, force=True)
+        self._bootstrap_cloud_identity()
+
+    def _bootstrap_cloud_identity(self) -> None:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return
+        if self.awaiting_player_name:
+            return
+        if self.cloud.has_session():
+            self._queue_cloud_auth(action="me", user_feedback=False)
+            return
+        self._start_cloud_auth_setup()
 
     def _start_player_name_setup(self) -> None:
         self.awaiting_player_name = True
@@ -4947,11 +5449,9 @@ class GethesApp:
             self.awaiting_player_name = False
             self.clear_input_handler()
             self._apply_player_identity()
-            self.ui.set_status(self.tr("ui.help_hint"))
-            self.ui.set_screen(self._welcome_text())
             self.ui.write(self.tr("app.player.setup.skip"))
             self._save_config()
-            self._queue_cloud_sync(reason="boot_guest", force=True)
+            self._on_identity_ready(sync_reason="boot_guest")
             return
 
         name = self._sanitize_player_name(token)
@@ -4963,16 +5463,175 @@ class GethesApp:
         self.awaiting_player_name = False
         self.clear_input_handler()
         self._apply_player_identity()
-        self._save_config()
-        self.ui.set_status(self.tr("ui.help_hint"))
-        self.ui.set_screen(self._welcome_text())
         self.ui.write(self.tr("app.player.setup.saved", name=name))
         self.ui.push_notification(
             self.tr("app.player.toast.title"),
             self.tr("app.player.toast.body", name=name),
             icon_key="mdi:account",
         )
-        self._queue_cloud_sync(reason="player_name_set", force=True)
+        self._save_config()
+        self._on_identity_ready(sync_reason="player_name_set")
+
+    def _start_cloud_auth_setup(self) -> None:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return
+        if self.cloud.has_session():
+            return
+        if self.awaiting_player_name:
+            return
+        if self.awaiting_cloud_auth_setup:
+            return
+        if self.input_handler is not None:
+            return
+
+        self.awaiting_cloud_auth_setup = True
+        self.cloud_auth_setup_stage = "choice"
+        self.cloud_auth_pending = {}
+        self.set_input_handler(self._handle_cloud_auth_setup_input)
+        self.ui.set_input_mask(False)
+        self.ui.set_status(self.tr("app.auth.setup.status"))
+        self.ui.set_screen(
+            "\n".join(
+                [
+                    self.tr("app.auth.setup.title"),
+                    "==========================================",
+                    "",
+                    self.tr("app.auth.setup.hint1"),
+                    self.tr("app.auth.setup.hint2"),
+                    "",
+                    self.tr("app.auth.setup.controls"),
+                ]
+            )
+        )
+
+    def _finish_cloud_auth_setup(self, success: bool) -> None:
+        self.awaiting_cloud_auth_setup = False
+        self.cloud_auth_setup_stage = ""
+        self.cloud_auth_pending = {}
+        self.clear_input_handler()
+        self.ui.set_input_mask(False)
+        self.ui.set_status(self.tr("ui.help_hint"))
+        self.ui.set_screen(self._welcome_text())
+        if not success:
+            self.ui.write(self.tr("app.auth.setup.skip"))
+
+    def _resume_cloud_auth_setup_after_error(self, error: str) -> None:
+        if not self.awaiting_cloud_auth_setup:
+            self._start_cloud_auth_setup()
+            return
+        self.cloud_auth_setup_stage = "choice"
+        self.cloud_auth_pending = {}
+        self.ui.set_input_mask(False)
+        self.ui.write(self.tr("app.auth.failed", error=error))
+        self.ui.write(self.tr("app.auth.setup.controls"))
+
+    def _handle_cloud_auth_setup_input(self, raw: str) -> None:
+        stage = self.cloud_auth_setup_stage
+        token = raw.strip()
+        lowered = token.lower()
+
+        if stage == "waiting":
+            self.ui.write(self.tr("app.auth.busy"))
+            return
+
+        if stage == "choice":
+            if lowered in {"skip", "guest", "invitado", "convidado"}:
+                self._finish_cloud_auth_setup(success=False)
+                return
+            if lowered in {"register", "registro", "signup", "r"}:
+                self.cloud_auth_setup_stage = "register_username"
+                self.ui.write(self.tr("app.auth.setup.ask_username"))
+                return
+            if lowered in {"login", "signin", "l"}:
+                self.cloud_auth_setup_stage = "login_login"
+                self.ui.write(self.tr("app.auth.setup.ask_login"))
+                return
+            self.ui.write(self.tr("app.auth.setup.controls"))
+            return
+
+        if stage == "register_username":
+            username = self._sanitize_auth_username(token)
+            if not username:
+                self.ui.write(self.tr("app.auth.username_invalid"))
+                self.ui.write(self.tr("app.auth.setup.ask_username"))
+                return
+            self.cloud_auth_pending = {"username": username}
+            self.cloud_auth_setup_stage = "register_email"
+            self.ui.write(self.tr("app.auth.setup.ask_email"))
+            return
+
+        if stage == "register_email":
+            email = self._sanitize_auth_email(token)
+            if not email:
+                self.ui.write(self.tr("app.auth.email_invalid"))
+                self.ui.write(self.tr("app.auth.setup.ask_email"))
+                return
+            self.cloud_auth_pending["email"] = email
+            self.cloud_auth_setup_stage = "register_password"
+            self.ui.set_input_mask(True)
+            self.ui.write(self.tr("app.auth.setup.ask_password"))
+            return
+
+        if stage == "register_password":
+            password = token
+            self.ui.set_input_mask(False)
+            if len(password) < 8:
+                self.ui.write(self.tr("app.auth.password_invalid"))
+                self.cloud_auth_setup_stage = "register_password"
+                self.ui.set_input_mask(True)
+                self.ui.write(self.tr("app.auth.setup.ask_password"))
+                return
+            self.cloud_auth_setup_stage = "waiting"
+            queued = self._queue_cloud_auth(
+                action="register",
+                username=self.cloud_auth_pending.get("username", ""),
+                email=self.cloud_auth_pending.get("email", ""),
+                password=password,
+                user_feedback=True,
+                from_setup=True,
+            )
+            if not queued:
+                self.cloud_auth_setup_stage = "choice"
+                self.ui.write(self.tr("app.auth.busy"))
+                self.ui.write(self.tr("app.auth.setup.controls"))
+            return
+
+        if stage == "login_login":
+            if not token:
+                self.ui.write(self.tr("app.auth.setup.ask_login"))
+                return
+            self.cloud_auth_pending = {"login": token}
+            self.cloud_auth_setup_stage = "login_password"
+            self.ui.set_input_mask(True)
+            self.ui.write(self.tr("app.auth.setup.ask_password"))
+            return
+
+        if stage == "login_password":
+            password = token
+            self.ui.set_input_mask(False)
+            if len(password) < 8:
+                self.ui.write(self.tr("app.auth.password_invalid"))
+                self.cloud_auth_setup_stage = "login_password"
+                self.ui.set_input_mask(True)
+                self.ui.write(self.tr("app.auth.setup.ask_password"))
+                return
+            self.cloud_auth_setup_stage = "waiting"
+            queued = self._queue_cloud_auth(
+                action="login",
+                login=self.cloud_auth_pending.get("login", ""),
+                password=password,
+                user_feedback=True,
+                from_setup=True,
+            )
+            if not queued:
+                self.cloud_auth_setup_stage = "choice"
+                self.ui.write(self.tr("app.auth.busy"))
+                self.ui.write(self.tr("app.auth.setup.controls"))
+            return
+
+        self.cloud_auth_setup_stage = "choice"
+        self.ui.set_input_mask(False)
+        self.ui.write(self.tr("app.auth.setup.controls"))
 
     def _welcome_text(self) -> str:
         return "\n".join(
@@ -4985,6 +5644,10 @@ class GethesApp:
                 "",
                 self.tr("app.welcome.subtitle"),
                 self.tr("app.welcome.user", name=self._player_name()),
+                self.tr(
+                    "app.welcome.account",
+                    user=(self.config.cloud_auth_username or self.tr("app.auth.guest")),
+                ),
                 self.tr(
                     "app.welcome.slot",
                     id=self.current_slot.slot_id,
@@ -5006,6 +5669,11 @@ class GethesApp:
                 "- `slotname <nombre>`",
                 "- `user <nombre>`",
                 "- `savegame`",
+                "",
+                self.tr("app.welcome.cloud"),
+                "- `cloud status`",
+                "- `auth register <user> <email> <pass>` / `auth login <user|email> <pass>`",
+                "- `news`",
                 "",
                 self.tr("app.welcome.help"),
             ]
@@ -5042,6 +5710,7 @@ class GethesApp:
             f"- savegame                 : {self.tr('app.help.savegame')}",
             f"- options / opciones       : {self.tr('app.help.options')}",
             f"- doctor [all|audio|update|ui]: {self.tr('app.help.doctor')}",
+            f"- health / domains         : {self.tr('app.help.health')}",
             f"- terminal <status|on|off|run ...>: {self.tr('app.help.terminal')}",
             f"- sh <comando_sistema>     : {self.tr('app.help.sh')}",
             f"- sound <on|off>           : {self.tr('app.help.sound')}",
@@ -5054,6 +5723,9 @@ class GethesApp:
             f"- fonts [filtro]           : {self.tr('app.help.fonts')}",
             f"- lang [{language_modes}]  : {self.tr('app.help.lang')}",
             f"- update ...               : {self.tr('app.help.update')}",
+            f"- cloud ...                : {self.tr('app.help.cloud')}",
+            f"- auth ...                 : {self.tr('app.help.auth')}",
+            f"- news [limite]            : {self.tr('app.help.news')}",
             f"- assets <status|reload>   : {self.tr('app.help.assets')}",
             f"- mods <status|reload>     : {self.tr('app.help.mods')}",
             f"- sfx                      : {self.tr('app.help.sfx')}",
@@ -5062,9 +5734,6 @@ class GethesApp:
         ]
         if self.syster_enabled:
             lines.append(f"- syster ...               : {self.tr('app.help.syster')}")
-            lines.append(
-                f"- syster endpoint <url|off>: {self.tr('app.help.syster_endpoint')}"
-            )
             lines.append(
                 f"- syster core ...          : {self.tr('app.help.syster_ollama')}"
             )
@@ -5125,6 +5794,9 @@ class GethesApp:
                 f"- {self.tr('app.options.update_repo'):13}: {self.update_manager.repo or '-'}",
                 f"- {self.tr('app.options.cloud'):13}: {'ON' if (self.config.cloud_enabled and self.cloud.is_linked()) else 'OFF'}",
                 f"- {self.tr('app.options.cloud_endpoint'):13}: {self.cloud.endpoint or '-'}",
+                f"- {self.tr('app.options.cloud_user'):13}: {self.config.cloud_auth_username or '-'}",
+                f"- {self.tr('app.options.cloud_sync_interval'):13}: {int(self.cloud_sync_cooldown)}s",
+                f"- {self.tr('app.options.cloud_news_interval'):13}: {int(self.cloud_news_cooldown)}s",
                 f"- {self.tr('app.options.achievements'):13}: {unlocked_count(self.current_slot.flags)}/{len(ACHIEVEMENTS)}",
                 f"- {self.tr('app.options.mods_path'):13}: {self.mods_dir}",
                 f"- {self.tr('app.options.mods_watch'):13}: {'ON' if self.mod_watcher is not None and self.mod_watcher.is_running() else 'OFF'}",
@@ -5134,3 +5806,4 @@ class GethesApp:
 
     def _clamp_slot(self, slot_id: int) -> int:
         return min(max(1, slot_id), self.save_manager.slots)
+
