@@ -3,6 +3,13 @@
   #define MyAppVersion "0.04"
 #endif
 #define MyAppPublisher "Gethes Project"
+#ifdef FastCompression
+  #define MyCompression "lzma2/fast"
+  #define MySolidCompression "no"
+#else
+  #define MyCompression "lzma2"
+  #define MySolidCompression "yes"
+#endif
 
 [Setup]
 AppId={{9DBBF68B-1A65-4A63-AB4F-74A177CD5E11}
@@ -15,8 +22,8 @@ DisableProgramGroupPage=yes
 LicenseFile=
 OutputDir=..\release
 OutputBaseFilename=Gethes-Setup-v{#MyAppVersion}
-Compression=lzma2
-SolidCompression=yes
+Compression={#MyCompression}
+SolidCompression={#MySolidCompression}
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -34,7 +41,8 @@ Name: "portuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\dist\Gethes\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\dist\Gethes\*"; DestDir: "{app}"; Excludes: "_internal\gethes\vendor\syster_core\models\blobs\*"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\dist\Gethes\_internal\gethes\vendor\syster_core\models\blobs\*"; DestDir: "{app}\_internal\gethes\vendor\syster_core\models\blobs"; Flags: recursesubdirs createallsubdirs ignoreversion nocompression skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\Gethes"; Filename: "{app}\Gethes.exe"

@@ -37,6 +37,27 @@ jobs:
         shell: pwsh
         run: choco install ollama --yes --no-progress
 
+      - name: Restore Syster model cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            gethes/vendor/syster_core/models
+          key: ${{ runner.os }}-syster-model-mistral-v1
+          restore-keys: |
+            ${{ runner.os }}-syster-model-mistral-
+
+      - name: Prepare bundled Syster core
+        shell: pwsh
+        timeout-minutes: 50
+        run: |
+          ./packaging/prepare_syster_core_bundle.ps1 -Model mistral
+          $modelRoot = Resolve-Path "gethes/vendor/syster_core/models"
+          $blobDir = Join-Path $modelRoot "blobs"
+          $blobCount = (Get-ChildItem -Path $blobDir -File -ErrorAction SilentlyContinue | Measure-Object).Count
+          $blobSize = (Get-ChildItem -Path $blobDir -File -ErrorAction SilentlyContinue | Measure-Object -Sum Length).Sum
+          if (-not $blobSize) { $blobSize = 0 }
+          Write-Host ("Syster model cache ready. blobs={0} size_gb={1:N2}" -f $blobCount, ($blobSize / 1GB))
+
       - name: Resolve release metadata
         id: meta
         shell: pwsh
@@ -51,8 +72,9 @@ jobs:
 
       - name: Build distributables
         shell: pwsh
+        timeout-minutes: 90
         run: |
-          ./build_exe.ps1 -Installer -BundleSysterCore -BundleSysterModel -RequireSysterCoreBundle
+          ./build_exe.ps1 -Installer -BundleSysterCore -BundleSysterModel -RequireSysterCoreBundle -FastArtifacts
 
       - name: Generate release title/body
         id: notes

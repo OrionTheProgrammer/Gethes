@@ -2,7 +2,8 @@
     [string]$Model = "mistral",
     [string]$RuntimeSource = "",
     [string]$HostAddress = "127.0.0.1:11439",
-    [switch]$SkipModelPull
+    [switch]$SkipModelPull,
+    [switch]$ForceModelPull
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +44,50 @@ if (-not (Test-Path $runtimeExe)) {
     throw "Bundled runtime missing ollama.exe at: $runtimeExe"
 }
 
+function Test-ModelAlreadyBundled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModelName,
+        [Parameter(Mandatory = $true)]
+        [string]$ModelsRoot
+    )
+
+    $modelToken = $ModelName.Trim().ToLower()
+    if ([string]::IsNullOrWhiteSpace($modelToken)) {
+        return $false
+    }
+
+    $tag = "latest"
+    $libraryName = $modelToken
+    if ($modelToken.Contains(":")) {
+        $parts = $modelToken.Split(":", 2)
+        $libraryName = $parts[0]
+        $tag = $parts[1]
+    }
+
+    if ($libraryName.Contains("/")) {
+        $manifestPath = Join-Path $ModelsRoot ("manifests\registry.ollama.ai\" + $libraryName.Replace("/", "\\") + "\\" + $tag)
+    } else {
+        $manifestPath = Join-Path $ModelsRoot "manifests\registry.ollama.ai\library\$libraryName\$tag"
+    }
+    $blobsPath = Join-Path $ModelsRoot "blobs"
+
+    if (-not (Test-Path $manifestPath) -or -not (Test-Path $blobsPath)) {
+        return $false
+    }
+
+    $blobAny = Get-ChildItem -Path $blobsPath -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    return $null -ne $blobAny
+}
+
 if (-not $SkipModelPull) {
+    if (-not $ForceModelPull -and (Test-ModelAlreadyBundled -ModelName $Model -ModelsRoot $modelsTarget)) {
+        Write-Host "Model '$Model' already present in bundle. Skipping pull."
+        Write-Host "Syster Core bundle ready at: $vendorRoot"
+        Write-Host "Now build with: .\\build_exe.ps1 -BundleSysterCore -BundleSysterModel"
+        exit 0
+    }
+
     Write-Host "Pulling model '$Model' into bundled models directory..."
     $env:OLLAMA_MODELS = $modelsTarget
     $env:OLLAMA_HOST = $HostAddress
@@ -55,6 +99,7 @@ if (-not $SkipModelPull) {
         if ($LASTEXITCODE -ne 0) {
             throw "Model pull failed with code $LASTEXITCODE"
         }
+        Write-Host "Model pull finished. Listing installed models:"
         & $runtimeExe list
     } finally {
         if ($serve -and -not $serve.HasExited) {

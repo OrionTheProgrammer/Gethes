@@ -9,6 +9,7 @@
     [switch]$BundleSysterModel,
     [switch]$RequireSysterCoreBundle,
     [switch]$SkipSysterBundle,
+    [switch]$FastArtifacts,
     [string]$SysterModel = "mistral",
     [string]$SysterRuntimeSource = "",
     [string]$PfxPath = "",
@@ -282,6 +283,8 @@ function Compress-WithRetry {
         [string[]]$Path,
         [Parameter(Mandatory = $true)]
         [string]$DestinationPath,
+        [ValidateSet("Optimal", "Fastest", "NoCompression")]
+        [string]$CompressionLevel = "Optimal",
         [int]$MaxRetries = 6
     )
 
@@ -345,8 +348,21 @@ function Compress-WithRetry {
             [Parameter(Mandatory = $true)]
             [string]$SourceDir,
             [Parameter(Mandatory = $true)]
-            [string]$ZipPath
+            [string]$ZipPath,
+            [Parameter(Mandatory = $true)]
+            [ValidateSet("Optimal", "Fastest", "NoCompression")]
+            [string]$Level
         )
+
+        $pyCompression = "zipfile.ZIP_DEFLATED"
+        $pyCompressLevel = "6"
+        if ($Level -eq "Fastest") {
+            $pyCompressLevel = "1"
+        }
+        if ($Level -eq "NoCompression") {
+            $pyCompression = "zipfile.ZIP_STORED"
+            $pyCompressLevel = "None"
+        }
 
         $pythonZipScript = @"
 from pathlib import Path
@@ -355,7 +371,12 @@ import zipfile
 src = Path(r'''$SourceDir''')
 dst = Path(r'''$ZipPath''')
 
-with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+compress_level = $pyCompressLevel
+kwargs = {"compression": $pyCompression}
+if compress_level is not None:
+    kwargs["compresslevel"] = compress_level
+
+with zipfile.ZipFile(dst, "w", **kwargs) as zf:
     for item in src.rglob("*"):
         if item.is_file():
             zf.write(item, item.relative_to(src))
@@ -374,10 +395,14 @@ with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
             $stagePath = New-StagingCopy -InputPaths $Path
             $stagePattern = Join-Path $stagePath "*"
             try {
-                Compress-Archive -Path $stagePattern -DestinationPath $DestinationPath -CompressionLevel Optimal -ErrorAction Stop
+                if ($CompressionLevel -eq "NoCompression") {
+                    Invoke-PythonZip -SourceDir $stagePath -ZipPath $DestinationPath -Level $CompressionLevel
+                } else {
+                    Compress-Archive -Path $stagePattern -DestinationPath $DestinationPath -CompressionLevel $CompressionLevel -ErrorAction Stop
+                }
             } catch {
                 Write-Host "Compress-Archive failed. Falling back to Python zip writer..."
-                Invoke-PythonZip -SourceDir $stagePath -ZipPath $DestinationPath
+                Invoke-PythonZip -SourceDir $stagePath -ZipPath $DestinationPath -Level $CompressionLevel
             }
             return
         } catch {
@@ -420,10 +445,17 @@ $includeModelBundle = $BundleSysterModel
 if ($includeModelBundle -and -not $BundleSysterCore) {
     $BundleSysterCore = $true
 }
+if (-not $PSBoundParameters.ContainsKey("FastArtifacts") -and $includeModelBundle) {
+    $FastArtifacts = $true
+    Write-Host "Fast artifact mode enabled (bundled model detected)."
+}
 
 $bundleState = Get-SysterCoreBundleState
 if ($BundleSysterCore) {
+    $bundleStart = [System.Diagnostics.Stopwatch]::StartNew()
     Ensure-SysterCoreBundle -IncludeModel:$includeModelBundle -Model $SysterModel -RuntimeSource $SysterRuntimeSource
+    $bundleStart.Stop()
+    Write-Host ("Syster bundle step completed in {0:N1} min." -f ($bundleStart.Elapsed.TotalMinutes))
     $bundleState = Get-SysterCoreBundleState
 }
 
@@ -542,6 +574,11 @@ Si aparece error de python313.dll:
 "@ | Set-Content -Path $notesPath -Encoding UTF8
 }
 
+$zipCompressionLevel = if ($FastArtifacts) { "NoCompression" } else { "Optimal" }
+if ($FastArtifacts) {
+    Write-Host "Fast artifact mode: ZIP compression disabled to reduce build time."
+}
+
 if (-not $NoZip) {
     New-Item -ItemType Directory -Path "release" -Force | Out-Null
 
@@ -550,7 +587,7 @@ if (-not $NoZip) {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Compress-WithRetry -Path @("dist\\Gethes.exe") -DestinationPath $zipPath
+        Compress-WithRetry -Path @("dist\\Gethes.exe") -DestinationPath $zipPath -CompressionLevel $zipCompressionLevel
         Write-Host "ZIP listo: $zipPath"
         $releaseArtifacts += (Resolve-Path $zipPath).Path
     } else {
@@ -558,7 +595,7 @@ if (-not $NoZip) {
         if (Test-Path $zipPath) {
             Remove-Item $zipPath -Force
         }
-        Compress-WithRetry -Path @("dist\\Gethes\\*") -DestinationPath $zipPath
+        Compress-WithRetry -Path @("dist\\Gethes\\*") -DestinationPath $zipPath -CompressionLevel $zipCompressionLevel
         Write-Host "ZIP listo: $zipPath"
         $releaseArtifacts += (Resolve-Path $zipPath).Path
     }
@@ -587,7 +624,13 @@ if ($Installer) {
             Write-Host "https://jrsoftware.org/isdl.php"
         } else {
             Write-Host "Compilando instalador Inno Setup..."
-            & $isccPath "/DMyAppVersion=$version" "packaging\\GethesInstaller.iss"
+            $isccArgs = @("/DMyAppVersion=$version")
+            if ($FastArtifacts) {
+                $isccArgs += "/DFastCompression=1"
+                Write-Host "Fast artifact mode: using faster Inno compression profile."
+            }
+            $isccArgs += "packaging\\GethesInstaller.iss"
+            & $isccPath @isccArgs
             $setupPath = "release\\Gethes-Setup-v$version.exe"
             Sign-Target -FilePath $setupPath
             if (Test-Path $setupPath) {
