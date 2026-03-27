@@ -118,6 +118,8 @@ class AwsSqliteTelemetryStore:
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._news_last_refresh = 0.0
+        self._snake_arena_players: dict[str, dict[str, object]] = {}
+        self._snake_arena_ttl_seconds = 14.0
         self._init_schema()
 
     def close(self) -> None:
@@ -1053,6 +1055,106 @@ class AwsSqliteTelemetryStore:
             "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
+    def _snake_arena_prune_locked(self, now_ts: float) -> None:
+        stale_before = now_ts - float(self._snake_arena_ttl_seconds)
+        stale_keys = [
+            token
+            for token, row in self._snake_arena_players.items()
+            if _as_float(row.get("updated_at"), 0.0) < stale_before
+        ]
+        for token in stale_keys:
+            self._snake_arena_players.pop(token, None)
+
+    def fetch_snake_arena_state(self, *, room: str = "global", limit: int = 12) -> dict[str, object]:
+        room_key = self._compact(room, 32) or "global"
+        limit_value = max(3, min(40, int(limit)))
+        now_ts = time.time()
+        prefix = f"{room_key}:"
+
+        with self._lock:
+            self._snake_arena_prune_locked(now_ts)
+            pool = [
+                row
+                for token, row in self._snake_arena_players.items()
+                if token.startswith(prefix)
+            ]
+
+        ordered = sorted(
+            pool,
+            key=lambda row: (
+                _as_int(row.get("score"), 0),
+                _as_int(row.get("length"), 0),
+                _as_int(row.get("level"), 0),
+                _as_float(row.get("updated_at"), 0.0),
+            ),
+            reverse=True,
+        )
+
+        items: list[dict[str, object]] = []
+        for idx, row in enumerate(ordered[:limit_value], start=1):
+            updated_at = _as_float(row.get("updated_at"), now_ts)
+            items.append(
+                {
+                    "rank": idx,
+                    "install_id": str(row.get("install_id", ""))[:64],
+                    "player_name": sanitize_name(str(row.get("player_name", "Guest"))),
+                    "score": _as_int(row.get("score"), 0),
+                    "length": _as_int(row.get("length"), 0),
+                    "level": _as_int(row.get("level"), 1),
+                    "x": _as_int(row.get("x"), -1),
+                    "y": _as_int(row.get("y"), -1),
+                    "mode": self._compact(row.get("mode", "online"), 16) or "online",
+                    "version_tag": self._compact(row.get("version_tag", ""), 32),
+                    "updated_at_utc": datetime.fromtimestamp(updated_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+            )
+
+        return {
+            "ok": True,
+            "room": room_key,
+            "count": len(items),
+            "players_online": len(ordered),
+            "items": items,
+            "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+    def push_snake_arena_state(self, payload: dict[str, object]) -> dict[str, object]:
+        install_raw = str(payload.get("install_id", "")).strip().lower().replace("-", "")
+        install_id = install_raw[:64]
+        if not install_id:
+            raise ValueError("missing_install_id")
+
+        room = self._compact(payload.get("room", "global"), 32) or "global"
+        player_name = sanitize_name(str(payload.get("player_name", "Guest")))
+        score = _as_int(payload.get("score"), 0)
+        length = _as_int(payload.get("length"), 0)
+        level = _as_int(payload.get("level"), 1)
+        pos_x = _as_int(payload.get("x"), -1)
+        pos_y = _as_int(payload.get("y"), -1)
+        mode = self._compact(payload.get("mode", "online"), 16) or "online"
+        version_tag = self._compact(payload.get("version", ""), 32)
+        now_ts = time.time()
+        key = f"{room}:{install_id}"
+
+        with self._lock:
+            self._snake_arena_prune_locked(now_ts)
+            self._snake_arena_players[key] = {
+                "room": room,
+                "install_id": install_id,
+                "player_name": player_name,
+                "score": max(0, score),
+                "length": max(0, length),
+                "level": max(1, level),
+                "x": max(-1, pos_x),
+                "y": max(-1, pos_y),
+                "mode": mode,
+                "version_tag": version_tag,
+                "updated_at": now_ts,
+            }
+        snapshot = self.fetch_snake_arena_state(room=room, limit=12)
+        snapshot["message"] = "arena_synced"
+        return snapshot
+
     def heartbeat(self, payload: dict[str, object]) -> dict[str, object]:
         install_id = self._upsert_player(payload)
         player_name = sanitize_name(str(payload.get("player_name", "Guest")))
@@ -1180,6 +1282,24 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, data)
             return
+        if route == "/v1/snake/arena":
+            if self.store is None:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "store_unavailable"})
+                return
+            room = "global"
+            if isinstance(query.get("room"), list) and query["room"]:
+                room = str(query["room"][0]).strip() or "global"
+            limit_raw = ""
+            if isinstance(query.get("limit"), list) and query["limit"]:
+                limit_raw = str(query["limit"][0]).strip()
+            limit = max(3, min(40, _as_int(limit_raw, 12)))
+            try:
+                data = self.store.fetch_snake_arena_state(room=room, limit=limit)
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+                return
+            self._send_json(HTTPStatus.OK, data)
+            return
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "not_found"})
 
     def do_POST(self) -> None:  # pragma: no cover
@@ -1193,6 +1313,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
             "/v1/auth/register",
             "/v1/auth/login",
             "/v1/auth/logout",
+            "/v1/snake/arena/push",
         }:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "not_found"})
             return
@@ -1269,6 +1390,18 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             ok = self.store.logout_session(session)
             self._send_json(HTTPStatus.OK, {"ok": bool(ok), "message": ("logged_out" if ok else "session_not_found")})
+            return
+
+        if route == "/v1/snake/arena/push":
+            try:
+                data = self.store.push_snake_arena_state(payload)
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)})
+                return
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+                return
+            self._send_json(HTTPStatus.OK, data)
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "not_found"})

@@ -33,6 +33,10 @@ jobs:
         shell: pwsh
         run: choco install innosetup --yes --no-progress
 
+      - name: Install Ollama Runtime
+        shell: pwsh
+        run: choco install ollama --yes --no-progress
+
       - name: Resolve release metadata
         id: meta
         shell: pwsh
@@ -48,7 +52,7 @@ jobs:
       - name: Build distributables
         shell: pwsh
         run: |
-          ./build_exe.ps1 -Installer
+          ./build_exe.ps1 -Installer -BundleSysterCore -BundleSysterModel -RequireSysterCoreBundle
 
       - name: Generate release title/body
         id: notes

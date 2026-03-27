@@ -57,6 +57,51 @@ def test_cloud_leaderboard_rejects_unknown_game() -> None:
     assert response.message == "invalid_game"
 
 
+def test_cloud_snake_arena_requires_link() -> None:
+    client = CloudSyncClient("")
+    response = client.push_snake_arena_state(
+        install_id="abc",
+        player_name="Guest",
+        score=10,
+        length=4,
+        level=1,
+        x=5,
+        y=3,
+    )
+    assert response.ok is False
+    assert response.message == "not_linked"
+
+
+def test_cloud_snake_arena_payload_contains_position() -> None:
+    client = CloudSyncClient("https://api.example.com")
+    captured: dict[str, object] = {}
+
+    def fake_request(method: str, path: str, payload: dict[str, object] | None = None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = payload or {}
+        return type("R", (), {"ok": True, "status_code": 200, "message": "ok", "payload": {"ok": True}})()
+
+    client._request_json = fake_request  # type: ignore[method-assign]
+    response = client.push_snake_arena_state(
+        install_id="player_1",
+        player_name="Orion",
+        score=77,
+        length=14,
+        level=4,
+        x=11,
+        y=8,
+        room="global",
+    )
+    assert response.ok is True
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/snake/arena/push"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert int(payload["x"]) == 11
+    assert int(payload["y"]) == 8
+
+
 def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     path = tmp_path / "cfg.json"
     store = ConfigStore(path)

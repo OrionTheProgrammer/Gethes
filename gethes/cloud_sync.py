@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import threading
 from urllib import error, parse, request
 
 from . import __version__
@@ -32,6 +33,8 @@ class CloudSyncClient:
         self.api_key = api_key.strip()
         self.session_token = session_token.strip()
         self.timeout = max(0.8, min(9.0, float(timeout)))
+        self._httpx_lock = threading.Lock()
+        self._httpx_client: "httpx.Client | None" = None
 
     @staticmethod
     def normalize_endpoint(value: str) -> str:
@@ -44,7 +47,10 @@ class CloudSyncClient:
         return endpoint
 
     def configure(self, endpoint: str, api_key: str = "", session_token: str | None = None) -> None:
-        self.endpoint = self.normalize_endpoint(endpoint)
+        normalized_endpoint = self.normalize_endpoint(endpoint)
+        if normalized_endpoint != self.endpoint:
+            self._reset_httpx_client()
+        self.endpoint = normalized_endpoint
         self.api_key = api_key.strip()
         if session_token is not None:
             self.session_token = session_token.strip()
@@ -60,6 +66,9 @@ class CloudSyncClient:
 
     def clear_session(self) -> None:
         self.session_token = ""
+
+    def close(self) -> None:
+        self._reset_httpx_client()
 
     def masked_key(self) -> str:
         token = self.api_key.strip()
@@ -207,6 +216,56 @@ class CloudSyncClient:
     def fetch_hangman_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> CloudResponse:
         return self.fetch_leaderboard(game="hangman", limit=limit, include_zero=include_zero)
 
+    def push_snake_arena_state(
+        self,
+        *,
+        install_id: str,
+        player_name: str,
+        score: int,
+        length: int,
+        level: int,
+        x: int = -1,
+        y: int = -1,
+        mode: str = "online",
+        room: str = "global",
+    ) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        payload = {
+            "install_id": install_id,
+            "player_name": player_name,
+            "score": max(0, int(score)),
+            "length": max(0, int(length)),
+            "level": max(1, int(level)),
+            "x": max(-1, int(x)),
+            "y": max(-1, int(y)),
+            "mode": (mode.strip().lower() or "online"),
+            "room": (room.strip().lower() or "global"),
+            "version": __version__,
+        }
+        return self._request_json(
+            method="POST",
+            path="/v1/snake/arena/push",
+            payload=payload,
+        )
+
+    def fetch_snake_arena_state(self, *, room: str = "global", limit: int = 12) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 12
+        payload = {
+            "room": (room.strip().lower() or "global"),
+            "limit": max(3, min(40, limit_value)),
+        }
+        return self._request_json(
+            method="GET",
+            path="/v1/snake/arena",
+            payload=payload,
+        )
+
     def _request_json(
         self,
         method: str,
@@ -251,18 +310,40 @@ class CloudSyncClient:
         url = self._build_url(path=path, payload=(payload if method == "GET" else None))
         headers = self._headers()
         try:
-            timeout = httpx.Timeout(self.timeout)
-            with httpx.Client(timeout=timeout) as client:
-                if method == "POST":
-                    resp = client.post(url, json=(payload or {}), headers=headers)
-                else:
-                    resp = client.get(url, headers=headers)
+            client = self._get_httpx_client()
+            if method == "POST":
+                resp = client.post(url, json=(payload or {}), headers=headers)
+            else:
+                resp = client.get(url, headers=headers)
         except (httpx.RequestError, httpx.TimeoutException, ValueError):
             return None
 
         data = self._parse_json_body(resp.text)
         message = self._extract_message(resp.status_code, data)
         return CloudResponse(resp.status_code < 400, int(resp.status_code), message, data)
+
+    def _get_httpx_client(self) -> "httpx.Client":
+        if httpx is None:  # pragma: no cover
+            raise RuntimeError("httpx unavailable")
+        with self._httpx_lock:
+            if self._httpx_client is None:
+                timeout = httpx.Timeout(self.timeout)
+                limits = httpx.Limits(
+                    max_connections=16,
+                    max_keepalive_connections=8,
+                    keepalive_expiry=20.0,
+                )
+                self._httpx_client = httpx.Client(timeout=timeout, limits=limits)
+            return self._httpx_client
+
+    def _reset_httpx_client(self) -> None:
+        with self._httpx_lock:
+            if self._httpx_client is not None:
+                try:
+                    self._httpx_client.close()
+                except Exception:
+                    pass
+                self._httpx_client = None
 
     def _request_urllib(
         self,

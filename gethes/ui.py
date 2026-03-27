@@ -752,6 +752,11 @@ class ConsoleUI:
 
     def set_key_handler(self, handler: Callable[[str], None] | None) -> None:
         self.key_handler = handler
+        if handler is None:
+            pygame.key.set_repeat(0)
+            return
+        # Lower repeat delay helps action mini-games react faster without waiting for new keydown edges.
+        pygame.key.set_repeat(70, 22)
 
     def set_entry_enabled(self, enabled: bool) -> None:
         self.input_enabled = enabled

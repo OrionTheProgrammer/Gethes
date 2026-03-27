@@ -271,3 +271,48 @@ def test_aws_store_rogue_and_hangman_leaderboard_order(tmp_path) -> None:
         assert hangman_items[2]["player_name"] == "One"
     finally:
         store.close()
+
+
+def test_aws_store_snake_arena_snapshot(tmp_path) -> None:
+    store = AwsSqliteTelemetryStore(tmp_path / "aws_arena.db", online_window_seconds=120)
+    try:
+        store.push_snake_arena_state(
+            {
+                "install_id": "player_a",
+                "player_name": "Alpha",
+                "score": 45,
+                "length": 12,
+                "level": 3,
+                "x": 9,
+                "y": 6,
+                "mode": "online",
+                "room": "global",
+                "version": "0.09",
+            }
+        )
+        store.push_snake_arena_state(
+            {
+                "install_id": "player_b",
+                "player_name": "Beta",
+                "score": 88,
+                "length": 16,
+                "level": 5,
+                "x": 14,
+                "y": 4,
+                "mode": "online",
+                "room": "global",
+                "version": "0.09",
+            }
+        )
+        snapshot = store.fetch_snake_arena_state(room="global", limit=5)
+        assert snapshot["ok"] is True
+        assert int(snapshot["players_online"]) >= 2
+        items = snapshot["items"]
+        assert isinstance(items, list)
+        assert len(items) >= 2
+        assert items[0]["player_name"] == "Beta"
+        assert int(items[0]["score"]) == 88
+        assert int(items[0]["x"]) == 14
+        assert int(items[0]["y"]) == 4
+    finally:
+        store.close()

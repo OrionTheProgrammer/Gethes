@@ -15,11 +15,21 @@ $runtimeTarget = Join-Path $vendorRoot "ollama"
 $modelsTarget = Join-Path $vendorRoot "models"
 
 if ([string]::IsNullOrWhiteSpace($RuntimeSource)) {
-    $RuntimeSource = Join-Path $env:LOCALAPPDATA "Programs\Ollama"
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Ollama"),
+        (Join-Path $env:ProgramFiles "Ollama"),
+        (Join-Path ${env:ProgramFiles(x86)} "Ollama")
+    )
+    foreach ($candidate in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path $candidate)) {
+            $RuntimeSource = $candidate
+            break
+        }
+    }
 }
 
 if (-not (Test-Path $RuntimeSource)) {
-    throw "Ollama runtime source not found: $RuntimeSource"
+    throw "Ollama runtime source not found. Install Ollama or pass -RuntimeSource <path>."
 }
 
 New-Item -ItemType Directory -Force -Path $runtimeTarget | Out-Null

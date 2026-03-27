@@ -8,6 +8,7 @@
     [switch]$BundleSysterCore,
     [switch]$BundleSysterModel,
     [switch]$RequireSysterCoreBundle,
+    [switch]$SkipSysterBundle,
     [string]$SysterModel = "mistral",
     [string]$SysterRuntimeSource = "",
     [string]$PfxPath = "",
@@ -401,6 +402,18 @@ if ($OneFile) {
 
 if (-not $OneFile -and -not $NoInstaller) {
     $Installer = $true
+}
+
+$bundleFlagsPassed = (
+    $PSBoundParameters.ContainsKey("BundleSysterCore") -or
+    $PSBoundParameters.ContainsKey("BundleSysterModel") -or
+    $PSBoundParameters.ContainsKey("RequireSysterCoreBundle")
+)
+if (-not $SkipSysterBundle -and -not $bundleFlagsPassed) {
+    $BundleSysterCore = $true
+    $BundleSysterModel = $true
+    $RequireSysterCoreBundle = $true
+    Write-Host "Default build profile: bundling Syster Core runtime + mistral model."
 }
 
 $includeModelBundle = $BundleSysterModel

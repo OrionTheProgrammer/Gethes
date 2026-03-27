@@ -370,6 +370,19 @@ class GethesApp:
         self.cloud_last_snake_leaderboard: list[dict[str, object]] = []
         self.cloud_last_rogue_leaderboard: list[dict[str, object]] = []
         self.cloud_last_hangman_leaderboard: list[dict[str, object]] = []
+        self.cloud_last_snake_arena: list[dict[str, object]] = []
+        self.cloud_last_snake_arena_players_online = 0
+        self.cloud_snake_arena_running = False
+        self.cloud_snake_arena_elapsed = 0.0
+        self.cloud_snake_arena_keepalive_elapsed = 0.0
+        self.cloud_snake_arena_last_rtt_ms = 0
+        self.cloud_snake_arena_last_ok_at = 0.0
+        self.cloud_snake_arena_fail_streak = 0
+        self.cloud_snake_arena_fast_interval = 0.5
+        self.cloud_snake_arena_idle_interval = 1.2
+        self.cloud_snake_arena_keepalive_interval = 2.6
+        self.cloud_snake_arena_last_state: tuple[int, int, int, int, int] = (0, 0, 1, -1, -1)
+        self.cloud_snake_arena_room = "global"
         self.cloud_live_leaderboard_interval = 4.0
         self.cloud_live_leaderboard_elapsed = 0.0
         self.cloud_live_leaderboard_game = ""
@@ -1495,9 +1508,8 @@ class GethesApp:
         def add_args(aliases: set[str], action: Callable[[list[str]], None]) -> None:
             router.add_many(aliases, lambda args, _raw_command, _parts: action(args))
 
-        def start_snake() -> None:
-            self._clear_daily_session()
-            self._run_domain("games", "snake_start", lambda: self.snake.start())
+        def start_snake(args: list[str]) -> None:
+            self._handle_snake_command(args)
 
         def start_roguelike() -> None:
             self._clear_daily_session()
@@ -1512,7 +1524,7 @@ class GethesApp:
         add_noargs({"menu", "inicio", "home"}, lambda: self.ui.set_screen(self._welcome_text()))
         add_noargs({"vmenu", "menuui", "visualmenu"}, lambda: self.ui.write(self.tr("app.vmenu_removed")))
 
-        add_noargs({"snake"}, start_snake)
+        add_args({"snake"}, start_snake)
         add_noargs(
             {"ahorcado1", "hangman1"},
             lambda: self._run_domain(
@@ -3232,6 +3244,77 @@ class GethesApp:
 
         self.ui.write(self.tr("app.daily.usage"))
 
+    def _handle_snake_command(self, args: list[str]) -> None:
+        self._clear_daily_session()
+
+        mode = "classic"
+        difficulty = "normal"
+        apples = 0
+        room = self.cloud_snake_arena_room
+
+        for raw in args:
+            token = raw.strip().lower()
+            if not token:
+                continue
+            if token in {
+                "easy",
+                "facil",
+                "fácil",
+                "normal",
+                "hard",
+                "dificil",
+                "difícil",
+                "insane",
+                "extreme",
+                "impossible",
+                "nightmare",
+            }:
+                difficulty = token
+                continue
+            if token in {"classic", "clasico", "clásico"}:
+                mode = "classic"
+                continue
+            if token in {"multi", "multimanzana", "multiapple", "manzanas", "apples"}:
+                mode = "multiapple"
+                continue
+            if token in {"online", "arena", "multiplayer", "mp", "slither", "slitherio", "agar", "agario", "io"}:
+                mode = "online"
+                continue
+            if token.startswith("apples="):
+                value = token.split("=", 1)[1].strip()
+                if value.isdigit():
+                    apples = max(2, min(7, int(value)))
+                continue
+            if token.startswith("room=") or token.startswith("sala=") or token.startswith("server="):
+                value = token.split("=", 1)[1].strip()
+                cleaned = self._sanitize_snake_room(value)
+                if cleaned:
+                    room = cleaned
+                continue
+            if token.isdigit():
+                apples = max(2, min(7, int(token)))
+
+        if mode == "online" and (not self.config.cloud_enabled or not self.cloud.is_linked()):
+            self.ui.write(self.tr("app.cloud.not_linked"))
+            self.ui.write("Tip: `cloud link <url>` and login to enable online Snake arena.")
+            mode = "classic"
+        if mode == "online":
+            self.cloud_snake_arena_room = self._sanitize_snake_room(room)
+            self._reset_snake_arena_runtime(clear_cache=True)
+            self.ui.write(self.tr("game.snake.online_room_joined", room=self.cloud_snake_arena_room))
+        else:
+            self._reset_snake_arena_runtime(clear_cache=False)
+
+        self._run_domain(
+            "games",
+            "snake_start",
+            lambda: self.snake.start(
+                difficulty=difficulty,
+                mode=mode,
+                apples=apples,
+            ),
+        )
+
     def _handle_cloud(self, args: list[str]) -> None:
         action = args[0].strip().lower() if args else "status"
 
@@ -3428,6 +3511,14 @@ class GethesApp:
         if not game:
             self.cloud_live_leaderboard_elapsed = 0.0
             self.cloud_live_leaderboard_game = ""
+            self._reset_snake_arena_runtime(clear_cache=False)
+            return
+
+        if game != "snake":
+            self._reset_snake_arena_runtime(clear_cache=False)
+
+        if game == "snake" and self.snake.active and self.snake.mode == "online":
+            self._update_snake_online_arena(dt)
             return
 
         if not self.config.cloud_enabled or not self.cloud.is_linked():
@@ -3442,6 +3533,156 @@ class GethesApp:
             return
         self.cloud_live_leaderboard_elapsed = 0.0
         self._queue_cloud_leaderboard(game=game, limit=6, user_feedback=False)
+
+    def _reset_snake_arena_runtime(self, *, clear_cache: bool) -> None:
+        self.cloud_snake_arena_elapsed = 0.0
+        self.cloud_snake_arena_keepalive_elapsed = 0.0
+        self.cloud_snake_arena_last_state = (0, 0, 1, -1, -1)
+        self.cloud_snake_arena_fail_streak = 0
+        self.cloud_snake_arena_last_rtt_ms = 0
+        self.cloud_snake_arena_last_ok_at = 0.0
+        if clear_cache:
+            self.cloud_last_snake_arena = []
+            self.cloud_last_snake_arena_players_online = 0
+
+    def _update_snake_online_arena(self, dt: float) -> None:
+        if not self.snake.active or self.snake.mode != "online":
+            self._reset_snake_arena_runtime(clear_cache=False)
+            return
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return
+        if not self.snake.snake:
+            return
+
+        head_x, head_y = self.snake.snake[0]
+        current_state = (
+            int(self.snake.score),
+            int(len(self.snake.snake)),
+            max(1, int(self.snake.level)),
+            int(head_x),
+            int(head_y),
+        )
+        changed = current_state != self.cloud_snake_arena_last_state
+        interval = self.cloud_snake_arena_fast_interval if changed else self.cloud_snake_arena_idle_interval
+
+        self.cloud_snake_arena_elapsed += dt
+        self.cloud_snake_arena_keepalive_elapsed += dt
+        if self.cloud_snake_arena_elapsed < interval:
+            return
+        if self.cloud_snake_arena_running:
+            return
+        if not changed and self.cloud_snake_arena_keepalive_elapsed < self.cloud_snake_arena_keepalive_interval:
+            return
+
+        self.cloud_snake_arena_elapsed = 0.0
+        self.cloud_snake_arena_keepalive_elapsed = 0.0
+        self._queue_cloud_snake_arena_push(
+            score=current_state[0],
+            length=current_state[1],
+            level=current_state[2],
+            head_x=current_state[3],
+            head_y=current_state[4],
+            room=self.cloud_snake_arena_room,
+            mode=self.snake.mode,
+        )
+
+    def _queue_cloud_snake_arena_push(
+        self,
+        *,
+        score: int,
+        length: int,
+        level: int,
+        head_x: int,
+        head_y: int,
+        room: str = "global",
+        mode: str = "online",
+    ) -> bool:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if self.cloud_snake_arena_running:
+            return False
+        if self.cloud_auth_running:
+            return False
+
+        room_token = room.strip().lower() or "global"
+        mode_token = mode.strip().lower() or "online"
+        payload_state = (int(score), int(length), int(level), int(head_x), int(head_y))
+        self.cloud_snake_arena_running = True
+
+        def worker() -> None:
+            started = time.monotonic()
+            response = self.cloud.push_snake_arena_state(
+                install_id=self.config.install_id,
+                player_name=self._player_name(),
+                score=payload_state[0],
+                length=payload_state[1],
+                level=payload_state[2],
+                x=payload_state[3],
+                y=payload_state[4],
+                mode=mode_token,
+                room=room_token,
+            )
+            self.update_events.put(
+                (
+                    "cloud_snake_arena_done",
+                    {
+                        "ok": response.ok,
+                        "status_code": response.status_code,
+                        "message": response.message,
+                        "payload": response.payload,
+                        "state": payload_state,
+                        "room": room_token,
+                        "rtt_ms": max(1, int((time.monotonic() - started) * 1000)),
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-cloud-snake-arena").start()
+        return True
+
+    def get_snake_online_player_count(self) -> int:
+        return max(0, int(self.cloud_last_snake_arena_players_online))
+
+    def get_snake_online_room(self) -> str:
+        return self._sanitize_snake_room(self.cloud_snake_arena_room)
+
+    def get_snake_online_sync_meta(self) -> tuple[int, int, int]:
+        ping_ms = max(0, int(self.cloud_snake_arena_last_rtt_ms))
+        age_seconds = 0
+        if self.cloud_snake_arena_last_ok_at > 0:
+            age_seconds = max(0, int(time.monotonic() - self.cloud_snake_arena_last_ok_at))
+        fail_streak = max(0, int(self.cloud_snake_arena_fail_streak))
+        return (ping_ms, age_seconds, fail_streak)
+
+    def get_snake_online_rank(self) -> int:
+        own = self.config.install_id.strip().lower().replace("-", "")
+        for row in self.cloud_last_snake_arena:
+            if not isinstance(row, dict):
+                continue
+            install = str(row.get("install_id", "")).strip().lower().replace("-", "")
+            if install and install == own:
+                return max(0, int(row.get("rank", 0) or 0))
+        return 0
+
+    def get_snake_online_ghosts(self) -> list[tuple[int, int, str]]:
+        if not (self.snake.active and self.snake.mode == "online"):
+            return []
+        own = self.config.install_id.strip().lower().replace("-", "")
+        ghosts: list[tuple[int, int, str]] = []
+        for row in self.cloud_last_snake_arena:
+            if not isinstance(row, dict):
+                continue
+            install = str(row.get("install_id", "")).strip().lower().replace("-", "")
+            if install and install == own:
+                continue
+            x = int(row.get("x", -1) or -1)
+            y = int(row.get("y", -1) or -1)
+            if x < 0 or y < 0:
+                continue
+            ghosts.append((x, y, str(row.get("player_name", "Guest") or "Guest")))
+            if len(ghosts) >= 10:
+                break
+        return ghosts
 
     def set_live_leaderboard_panel(self, game: str, current_lines: list[str] | None = None) -> None:
         token = self._normalize_leaderboard_game(game)
@@ -3491,6 +3732,42 @@ class GethesApp:
                     )
             else:
                 lines.append(self.tr("app.cloud.sidebar.empty"))
+            self.ui.set_side_panel(title=title, lines=lines)
+            return
+
+        if self.snake.active and self.snake.mode == "online":
+            title = self.tr("app.cloud.sidebar.snake.online_title")
+            lines.append(
+                self.tr(
+                    "app.cloud.sidebar.snake.online_count",
+                    count=self.get_snake_online_player_count(),
+                    room=self.get_snake_online_room(),
+                )
+            )
+            ping_ms, age_seconds, fail_streak = self.get_snake_online_sync_meta()
+            lines.append(
+                self.tr(
+                    "app.cloud.sidebar.snake.online_sync",
+                    ping=ping_ms,
+                    sync=age_seconds,
+                    fails=fail_streak,
+                )
+            )
+            rank = self.get_snake_online_rank()
+            if rank > 0:
+                lines.append(self.tr("app.cloud.sidebar.snake.online_rank", rank=rank))
+            lines.append("")
+            arena_rows = [row for row in self.cloud_last_snake_arena if isinstance(row, dict)]
+            if arena_rows:
+                for row in arena_rows[:6]:
+                    rank = int(row.get("rank", 0) or 0)
+                    name = str(row.get("player_name", "") or "Guest")
+                    score = int(row.get("score", 0) or 0)
+                    level = int(row.get("level", 1) or 1)
+                    length = int(row.get("length", 0) or 0)
+                    lines.append(f"#{rank} {name}  S:{score} L:{level} LEN:{length}")
+            else:
+                lines.append(self.tr("app.cloud.sidebar.snake.online_searching"))
             self.ui.set_side_panel(title=title, lines=lines)
             return
 
@@ -4958,6 +5235,14 @@ class GethesApp:
                 )
                 continue
 
+            if event == "cloud_snake_arena_done":
+                self._run_domain(
+                    "cloud",
+                    "consume_snake_arena_done",
+                    lambda: self._consume_cloud_snake_arena_done(payload),
+                )
+                continue
+
             if event == "cloud_auth_done":
                 self._run_domain("cloud", "consume_auth_done", lambda: self._consume_cloud_auth_done(payload))
                 continue
@@ -5173,6 +5458,45 @@ class GethesApp:
                     version=str(row.get("version_tag", "") or "-"),
                 )
             )
+
+    def _consume_cloud_snake_arena_done(self, payload: dict[str, object]) -> None:
+        self.cloud_snake_arena_running = False
+        ok = bool(payload.get("ok", False))
+        message = str(payload.get("message", "")).strip()
+        data = payload.get("payload")
+        room = self._sanitize_snake_room(str(payload.get("room", "")))
+        self.cloud_snake_arena_last_rtt_ms = max(0, int(payload.get("rtt_ms", 0) or 0))
+        state = payload.get("state")
+        if isinstance(state, tuple) and len(state) == 5:
+            try:
+                self.cloud_snake_arena_last_state = (
+                    int(state[0]),
+                    int(state[1]),
+                    max(1, int(state[2])),
+                    int(state[3]),
+                    int(state[4]),
+                )
+            except (TypeError, ValueError):
+                pass
+        self.cloud_last_status = "ok" if ok else "error"
+        self.cloud_last_message = message or ("ok" if ok else "network_error")
+        if not ok or not isinstance(data, dict):
+            self.cloud_snake_arena_fail_streak += 1
+            return
+
+        self.cloud_snake_arena_fail_streak = 0
+        self.cloud_snake_arena_last_ok_at = time.monotonic()
+        self.cloud_snake_arena_room = room
+        players_online = int(data.get("players_online", 0) or 0)
+        self.cloud_last_snake_arena_players_online = max(0, players_online)
+        raw_items = data.get("items")
+        parsed: list[dict[str, object]] = []
+        if isinstance(raw_items, list):
+            for row in raw_items:
+                if isinstance(row, dict):
+                    parsed.append(row)
+        self.cloud_last_snake_arena = parsed
+        self._refresh_active_game_side_panel()
 
     def _consume_cloud_auth_done(self, payload: dict[str, object]) -> None:
         self.cloud_auth_running = False
@@ -5586,6 +5910,16 @@ class GethesApp:
         cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"_", "-", " "})
         normalized = " ".join(cleaned.split()).strip()
         return normalized[:24]
+
+    @staticmethod
+    def _sanitize_snake_room(raw: str) -> str:
+        value = raw.strip().lower()
+        if not value:
+            return "global"
+        cleaned = "".join(ch for ch in value if ch.isalnum() or ch in {"_", "-"})
+        if not cleaned:
+            return "global"
+        return cleaned[:24]
 
     def _player_name(self) -> str:
         name = self._sanitize_player_name(self.config.player_name)
