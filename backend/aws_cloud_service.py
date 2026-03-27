@@ -619,7 +619,9 @@ class AwsSqliteTelemetryStore:
         auth_user = payload.get("auth_user") if isinstance(payload.get("auth_user"), dict) else {}
         auth_name = ""
         if isinstance(auth_user, dict):
-            auth_name = sanitize_name(str(auth_user.get("username", "")))
+            auth_raw = str(auth_user.get("username", "")).strip()
+            if auth_raw:
+                auth_name = sanitize_name(auth_raw)
         player_name = auth_name or sanitize_name(str(payload.get("player_name", "Guest")))
         version_tag = self._compact(payload.get("version", ""), 32)
         profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
@@ -866,6 +868,58 @@ class AwsSqliteTelemetryStore:
         total = _as_int(row_total["c"]) if row_total is not None else 0
         return online, total
 
+    def fetch_snake_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> dict[str, object]:
+        limit_value = max(1, min(50, int(limit)))
+        where_clause = "" if include_zero else "WHERE snake_best_score > 0"
+
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    player_name,
+                    snake_best_score,
+                    snake_best_level,
+                    snake_longest_length,
+                    route_name,
+                    version_tag,
+                    last_seen
+                FROM players
+                {where_clause}
+                ORDER BY snake_best_score DESC, snake_best_level DESC, snake_longest_length DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (limit_value,),
+            ).fetchall()
+
+        items: list[dict[str, object]] = []
+        for idx, row in enumerate(rows, start=1):
+            last_seen_raw = _as_float(row["last_seen"], 0.0)
+            last_seen_utc = (
+                datetime.fromtimestamp(last_seen_raw, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if last_seen_raw > 0
+                else ""
+            )
+            items.append(
+                {
+                    "rank": idx,
+                    "player_name": sanitize_name(str(row["player_name"] or "Guest")),
+                    "snake_best_score": _as_int(row["snake_best_score"]),
+                    "snake_best_level": _as_int(row["snake_best_level"]),
+                    "snake_longest_length": _as_int(row["snake_longest_length"]),
+                    "route_name": self._compact(row["route_name"], 128),
+                    "version_tag": self._compact(row["version_tag"], 32),
+                    "last_seen_utc": last_seen_utc,
+                }
+            )
+
+        return {
+            "ok": True,
+            "game": "snake",
+            "count": len(items),
+            "items": items,
+            "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
     def heartbeat(self, payload: dict[str, object]) -> dict[str, object]:
         install_id = self._upsert_player(payload)
         player_name = sanitize_name(str(payload.get("player_name", "Guest")))
@@ -963,6 +1017,25 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.UNAUTHORIZED if str(exc) == "invalid_session" else HTTPStatus.BAD_REQUEST
                 self._send_json(status, {"ok": False, "message": str(exc)})
                 return
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
+                return
+            self._send_json(HTTPStatus.OK, data)
+            return
+        if route == "/v1/leaderboard/snake":
+            if self.store is None:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "store_unavailable"})
+                return
+            limit_raw = ""
+            if isinstance(query.get("limit"), list) and query["limit"]:
+                limit_raw = str(query["limit"][0]).strip()
+            include_zero_raw = ""
+            if isinstance(query.get("include_zero"), list) and query["include_zero"]:
+                include_zero_raw = str(query["include_zero"][0]).strip().lower()
+            limit = max(1, min(50, _as_int(limit_raw, 10)))
+            include_zero = include_zero_raw in {"1", "true", "on", "yes"}
+            try:
+                data = self.store.fetch_snake_leaderboard(limit=limit, include_zero=include_zero)
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
                 return

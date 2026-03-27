@@ -43,6 +43,13 @@ def test_cloud_news_requires_session() -> None:
     assert response.message == "not_authenticated"
 
 
+def test_cloud_leaderboard_requires_link() -> None:
+    client = CloudSyncClient("")
+    response = client.fetch_snake_leaderboard(limit=5)
+    assert response.ok is False
+    assert response.message == "not_linked"
+
+
 def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     path = tmp_path / "cfg.json"
     store = ConfigStore(path)

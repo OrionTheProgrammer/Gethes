@@ -171,6 +171,24 @@ class CloudSyncClient:
             payload=payload,
         )
 
+    def fetch_snake_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> CloudResponse:
+        if not self.is_linked():
+            return CloudResponse(False, 0, "not_linked", {})
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            limit_value = 10
+        payload: dict[str, object] = {
+            "limit": max(1, min(50, limit_value)),
+        }
+        if include_zero:
+            payload["include_zero"] = 1
+        return self._request_json(
+            method="GET",
+            path="/v1/leaderboard/snake",
+            payload=payload,
+        )
+
     def _request_json(
         self,
         method: str,

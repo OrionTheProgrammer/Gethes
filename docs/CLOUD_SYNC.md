@@ -22,6 +22,7 @@ Cloud sync is used to persist and aggregate:
 - `cloud key <token|off>`
 - `cloud sync`
 - `cloud online`
+- `cloud leaderboard [snake] [count]`
 - `cloud interval <20-600>`
 - `cloud news [count]`
 - `cloud newsinterval <60-3600>`
@@ -52,6 +53,7 @@ Example:
 - `POST /v1/auth/logout`
 - `GET /v1/auth/me`
 - `GET /v1/news`
+- `GET /v1/leaderboard/snake`
 
 ## Authentication Layers
 
@@ -209,6 +211,34 @@ News items are sourced from:
 
 - latest GitHub release,
 - latest repository commits.
+
+## Snake Leaderboard Contract (High Level)
+
+`GET /v1/leaderboard/snake?limit=10`  
+Headers: API key only (session token not required)
+
+Response shape:
+
+```json
+{
+  "ok": true,
+  "game": "snake",
+  "count": 3,
+  "items": [
+    {
+      "rank": 1,
+      "player_name": "orion",
+      "snake_best_score": 270,
+      "snake_best_level": 7,
+      "snake_longest_length": 30,
+      "route_name": "Route 1",
+      "version_tag": "0.11",
+      "last_seen_utc": "2026-03-26T23:58:12Z"
+    }
+  ],
+  "generated_at_utc": "2026-03-27T00:17:01Z"
+}
+```
 
 ## Recommended Security
 

@@ -126,3 +126,65 @@ def test_aws_store_auth_and_news(tmp_path) -> None:
         assert store.resolve_session_user(token) is None
     finally:
         store.close()
+
+
+def test_aws_store_snake_leaderboard_order(tmp_path) -> None:
+    store = AwsSqliteTelemetryStore(tmp_path / "aws_leaderboard.db", online_window_seconds=120)
+    try:
+        base_payload = {
+            "version": "0.11",
+            "profile": {
+                "slot_id": 1,
+                "route_name": "Route 1",
+                "story_page": 0,
+                "story_total": 0,
+                "achievements_unlocked": 0,
+                "achievements_total": 20,
+            },
+            "preferences": {
+                "graphics": "high",
+                "language_active": "es",
+                "ui_scale": 1.0,
+                "theme": "obsidian",
+            },
+        }
+
+        payloads = [
+            {
+                **base_payload,
+                "install_id": "player_a",
+                "player_name": "Alpha",
+                "scores": {"snake_best_score": 120, "snake_best_level": 4, "snake_longest_length": 16},
+            },
+            {
+                **base_payload,
+                "install_id": "player_b",
+                "player_name": "Beta",
+                "scores": {"snake_best_score": 220, "snake_best_level": 6, "snake_longest_length": 24},
+            },
+            {
+                **base_payload,
+                "install_id": "player_c",
+                "player_name": "Gamma",
+                "scores": {"snake_best_score": 180, "snake_best_level": 5, "snake_longest_length": 20},
+            },
+        ]
+        for payload in payloads:
+            store.heartbeat(payload)
+
+        data = store.fetch_snake_leaderboard(limit=3, include_zero=False)
+        assert data["ok"] is True
+        items = data["items"]
+        assert isinstance(items, list)
+        assert len(items) == 3
+        assert items[0]["player_name"] == "Beta"
+        assert int(items[0]["snake_best_score"]) == 220
+        assert items[1]["player_name"] == "Gamma"
+        assert int(items[1]["snake_best_score"]) == 180
+        assert items[2]["player_name"] == "Alpha"
+        assert int(items[2]["snake_best_score"]) == 120
+        assert int(items[0]["rank"]) == 1
+        assert int(items[1]["rank"]) == 2
+        assert int(items[2]["rank"]) == 3
+    finally:
+        store.close()

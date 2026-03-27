@@ -6,6 +6,9 @@ dist/
 *.spec
 .pytest_cache/
 .hypothesis/
+.tmp/
+*.pem
+*.key
 gethes_config.json
 packaging/getheslogo.ico
 release/*.zip

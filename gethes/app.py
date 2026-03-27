@@ -358,6 +358,7 @@ class GethesApp:
         self.cloud_sync_cooldown = float(self.config.cloud_sync_interval_seconds)
         self.cloud_sync_elapsed = 0.0
         self.cloud_news_running = False
+        self.cloud_leaderboard_running = False
         self.cloud_news_elapsed = 0.0
         self.cloud_news_cooldown = float(self.config.cloud_news_poll_seconds)
         self.cloud_last_news_at = 0.0
@@ -365,6 +366,7 @@ class GethesApp:
         self.cloud_last_status = "idle"
         self.cloud_last_message = ""
         self.cloud_last_presence: dict[str, object] = {}
+        self.cloud_last_snake_leaderboard: list[dict[str, object]] = []
         self.cloud_last_sync_at = 0.0
         self.daily_active_game = ""
         self.daily_active_date = ""
@@ -1569,6 +1571,10 @@ class GethesApp:
         add_args({"login", "signin", "iniciar"}, lambda args: self._handle_auth(["login", *args]))
         add_noargs({"logout", "cerrarsesion"}, lambda: self._handle_auth(["logout"]))
         add_args({"news", "noticias"}, lambda args: self._handle_cloud(["news", *args]))
+        add_args(
+            {"leaderboard", "ranking", "rank", "top"},
+            lambda args: self._handle_cloud(["leaderboard", *args]),
+        )
         add_args({"sfx"}, self._handle_sfx)
         add_noargs({"save"}, save_config_feedback)
 
@@ -3183,6 +3189,35 @@ class GethesApp:
             self._queue_cloud_presence(user_feedback=True)
             return
 
+        if action in {"leaderboard", "ranking", "rank", "top"}:
+            if not self.config.cloud_enabled or not self.cloud.is_linked():
+                self.ui.write(self.tr("app.cloud.not_linked"))
+                return
+
+            game_token = "snake"
+            limit = 10
+            if len(args) >= 2:
+                token_2 = args[1].strip().lower()
+                if token_2.isdigit():
+                    limit = max(1, min(50, int(token_2)))
+                else:
+                    game_token = token_2
+            if len(args) >= 3:
+                token_3 = args[2].strip()
+                if token_3.isdigit():
+                    limit = max(1, min(50, int(token_3)))
+                else:
+                    self.ui.write(self.tr("app.cloud.leaderboard_usage"))
+                    return
+
+            if game_token not in {"snake", "s"}:
+                self.ui.write(self.tr("app.cloud.leaderboard_game_invalid"))
+                self.ui.write(self.tr("app.cloud.leaderboard_usage"))
+                return
+
+            self._queue_cloud_snake_leaderboard(limit=limit, user_feedback=True)
+            return
+
         if action in {"interval", "every", "timer"}:
             if len(args) < 2:
                 self.ui.write(self.tr("app.cloud.interval_usage"))
@@ -3592,6 +3627,42 @@ class GethesApp:
             )
 
         threading.Thread(target=worker, daemon=True, name="gethes-cloud-presence").start()
+        return True
+
+    def _queue_cloud_snake_leaderboard(
+        self,
+        *,
+        limit: int = 10,
+        user_feedback: bool = False,
+    ) -> bool:
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return False
+        if self.cloud_leaderboard_running:
+            return False
+        if self.cloud_auth_running:
+            return False
+
+        limit_value = max(1, min(50, int(limit)))
+        self.cloud_leaderboard_running = True
+        if user_feedback:
+            self.ui.write(self.tr("app.cloud.leaderboard_query"))
+
+        def worker() -> None:
+            response = self.cloud.fetch_snake_leaderboard(limit=limit_value)
+            self.update_events.put(
+                (
+                    "cloud_snake_leaderboard_done",
+                    {
+                        "ok": response.ok,
+                        "status_code": response.status_code,
+                        "message": response.message,
+                        "payload": response.payload,
+                        "user_feedback": user_feedback,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name="gethes-cloud-snake-leaderboard").start()
         return True
 
     def _queue_cloud_news(
@@ -4593,6 +4664,14 @@ class GethesApp:
                 self._run_domain("cloud", "consume_presence_done", lambda: self._consume_cloud_presence_done(payload))
                 continue
 
+            if event == "cloud_snake_leaderboard_done":
+                self._run_domain(
+                    "cloud",
+                    "consume_snake_leaderboard_done",
+                    lambda: self._consume_cloud_snake_leaderboard_done(payload),
+                )
+                continue
+
             if event == "cloud_auth_done":
                 self._run_domain("cloud", "consume_auth_done", lambda: self._consume_cloud_auth_done(payload))
                 continue
@@ -4705,6 +4784,55 @@ class GethesApp:
 
         if user_feedback:
             self.ui.write(self.tr("app.cloud.sync_failed", error=(message or "network_error")))
+
+    def _consume_cloud_snake_leaderboard_done(self, payload: dict[str, object]) -> None:
+        self.cloud_leaderboard_running = False
+        ok = bool(payload.get("ok", False))
+        message = str(payload.get("message", "")).strip()
+        data = payload.get("payload")
+        user_feedback = bool(payload.get("user_feedback", False))
+
+        self.cloud_last_status = "ok" if ok else "error"
+        self.cloud_last_message = message or ("ok" if ok else "network_error")
+
+        if not ok:
+            if user_feedback:
+                self.ui.write(self.tr("app.cloud.leaderboard_failed", error=(message or "network_error")))
+            return
+
+        if not isinstance(data, dict):
+            if user_feedback:
+                self.ui.write(self.tr("app.cloud.leaderboard_empty"))
+            return
+
+        raw_items = data.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        parsed_items: list[dict[str, object]] = []
+        for item in items:
+            if isinstance(item, dict):
+                parsed_items.append(item)
+        self.cloud_last_snake_leaderboard = parsed_items
+
+        if not user_feedback:
+            return
+        if not parsed_items:
+            self.ui.write(self.tr("app.cloud.leaderboard_empty"))
+            return
+
+        self.ui.write(self.tr("app.cloud.leaderboard_title", count=len(parsed_items)))
+        for row in parsed_items:
+            self.ui.write(
+                self.tr(
+                    "app.cloud.leaderboard_item",
+                    rank=int(row.get("rank", 0) or 0),
+                    name=str(row.get("player_name", "") or "Guest"),
+                    score=int(row.get("snake_best_score", 0) or 0),
+                    level=int(row.get("snake_best_level", 0) or 0),
+                    length=int(row.get("snake_longest_length", 0) or 0),
+                    route=str(row.get("route_name", "") or "-"),
+                    version=str(row.get("version_tag", "") or "-"),
+                )
+            )
 
     def _consume_cloud_auth_done(self, payload: dict[str, object]) -> None:
         self.cloud_auth_running = False
