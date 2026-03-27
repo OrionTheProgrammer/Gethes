@@ -1,7 +1,8 @@
 ﻿param(
     [string]$Model = "mistral",
     [string]$RuntimeSource = "",
-    [string]$HostAddress = "127.0.0.1:11439"
+    [string]$HostAddress = "127.0.0.1:11439",
+    [switch]$SkipModelPull
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,23 +33,27 @@ if (-not (Test-Path $runtimeExe)) {
     throw "Bundled runtime missing ollama.exe at: $runtimeExe"
 }
 
-Write-Host "Pulling model '$Model' into bundled models directory..."
-$env:OLLAMA_MODELS = $modelsTarget
-$env:OLLAMA_HOST = $HostAddress
+if (-not $SkipModelPull) {
+    Write-Host "Pulling model '$Model' into bundled models directory..."
+    $env:OLLAMA_MODELS = $modelsTarget
+    $env:OLLAMA_HOST = $HostAddress
 
-$serve = Start-Process -FilePath $runtimeExe -ArgumentList "serve" -PassThru -WindowStyle Hidden
-try {
-    Start-Sleep -Seconds 3
-    & $runtimeExe pull $Model
-    if ($LASTEXITCODE -ne 0) {
-        throw "Model pull failed with code $LASTEXITCODE"
+    $serve = Start-Process -FilePath $runtimeExe -ArgumentList "serve" -PassThru -WindowStyle Hidden
+    try {
+        Start-Sleep -Seconds 3
+        & $runtimeExe pull $Model
+        if ($LASTEXITCODE -ne 0) {
+            throw "Model pull failed with code $LASTEXITCODE"
+        }
+        & $runtimeExe list
+    } finally {
+        if ($serve -and -not $serve.HasExited) {
+            Stop-Process -Id $serve.Id -Force -ErrorAction SilentlyContinue
+        }
     }
-    & $runtimeExe list
-} finally {
-    if ($serve -and -not $serve.HasExited) {
-        Stop-Process -Id $serve.Id -Force -ErrorAction SilentlyContinue
-    }
+} else {
+    Write-Host "Skipping model pull. Runtime-only bundle prepared."
 }
 
 Write-Host "Syster Core bundle ready at: $vendorRoot"
-Write-Host "Now build with: .\\build_exe.ps1"
+Write-Host "Now build with: .\\build_exe.ps1 -BundleSysterCore"

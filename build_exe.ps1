@@ -5,6 +5,11 @@
     [switch]$Installer,
     [switch]$NoInstaller,
     [switch]$AutoInstallInno,
+    [switch]$BundleSysterCore,
+    [switch]$BundleSysterModel,
+    [switch]$RequireSysterCoreBundle,
+    [string]$SysterModel = "mistral",
+    [string]$SysterRuntimeSource = "",
     [string]$PfxPath = "",
     [string]$PfxPassword = "",
     [string]$CertThumbprint = "",
@@ -50,6 +55,70 @@ function Resolve-AppVersion {
         }
     }
     return $version
+}
+
+function Get-SysterCoreBundleState {
+    $vendorRoot = Join-Path (Resolve-Path ".").Path "gethes\vendor\syster_core"
+    $runtimeExe = Join-Path $vendorRoot "ollama\ollama.exe"
+    $modelsRoot = Join-Path $vendorRoot "models"
+    $manifestRoot = Join-Path $modelsRoot "manifests"
+    $blobsRoot = Join-Path $modelsRoot "blobs"
+
+    $hasRuntime = Test-Path $runtimeExe
+    $hasModels = (Test-Path $manifestRoot) -and (Test-Path $blobsRoot)
+
+    return [PSCustomObject]@{
+        VendorRoot = $vendorRoot
+        RuntimeExe = $runtimeExe
+        ModelsRoot = $modelsRoot
+        HasRuntime = $hasRuntime
+        HasModels = $hasModels
+        Ready = ($hasRuntime -and $hasModels)
+    }
+}
+
+function Ensure-SysterCoreBundle {
+    param(
+        [switch]$IncludeModel,
+        [string]$Model = "mistral",
+        [string]$RuntimeSource = ""
+    )
+
+    $prepScript = Join-Path "packaging" "prepare_syster_core_bundle.ps1"
+    if (-not (Test-Path $prepScript)) {
+        throw "No se encontro script de bundle Syster Core: $prepScript"
+    }
+
+    $bundleState = Get-SysterCoreBundleState
+    $runtimeReady = $bundleState.HasRuntime
+    $modelReady = $bundleState.HasModels
+
+    if ($runtimeReady -and ($modelReady -or -not $IncludeModel)) {
+        Write-Host "Syster Core bundle ya disponible. Runtime=$runtimeReady Models=$modelReady"
+        return
+    }
+
+    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $prepScript, "-Model", $Model)
+    if (-not [string]::IsNullOrWhiteSpace($RuntimeSource)) {
+        $args += @("-RuntimeSource", $RuntimeSource)
+    }
+    if (-not $IncludeModel) {
+        $args += "-SkipModelPull"
+    }
+
+    Write-Host "Preparando bundle Syster Core..."
+    & powershell.exe @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "Fallo la preparacion del bundle Syster Core (exit code $LASTEXITCODE)."
+    }
+
+    $verify = Get-SysterCoreBundleState
+    if (-not $verify.HasRuntime) {
+        throw "Bundle Syster Core incompleto: falta runtime ($($verify.RuntimeExe))."
+    }
+    if ($IncludeModel -and -not $verify.HasModels) {
+        throw "Bundle Syster Core incompleto: faltan modelos en $($verify.ModelsRoot)."
+    }
 }
 
 function Ensure-AppIconFile {
@@ -332,6 +401,38 @@ if ($OneFile) {
 
 if (-not $OneFile -and -not $NoInstaller) {
     $Installer = $true
+}
+
+$includeModelBundle = $BundleSysterModel
+if ($includeModelBundle -and -not $BundleSysterCore) {
+    $BundleSysterCore = $true
+}
+
+$bundleState = Get-SysterCoreBundleState
+if ($BundleSysterCore) {
+    Ensure-SysterCoreBundle -IncludeModel:$includeModelBundle -Model $SysterModel -RuntimeSource $SysterRuntimeSource
+    $bundleState = Get-SysterCoreBundleState
+}
+
+if ($RequireSysterCoreBundle -and -not $bundleState.HasRuntime) {
+    throw "Falta runtime de Syster Core en gethes\\vendor\\syster_core\\ollama."
+}
+if ($RequireSysterCoreBundle -and $includeModelBundle -and -not $bundleState.HasModels) {
+    throw "Faltan modelos de Syster Core en gethes\\vendor\\syster_core\\models."
+}
+
+if ($bundleState.HasRuntime) {
+    Write-Host "Syster Core runtime incluido en build."
+} else {
+    Write-Host "Syster Core runtime NO incluido. Los jugadores veran runtime_downloading en primer uso."
+}
+if ($bundleState.HasModels) {
+    Write-Host "Syster Core models incluidos en build."
+} else {
+    Write-Host "Syster Core models NO incluidos. El modelo se descargara en segundo plano."
+}
+if ($bundleState.HasRuntime -and $OneFile) {
+    Write-Host "Aviso: --onefile con runtime Syster Core puede generar ejecutable muy grande."
 }
 
 $iconFile = Ensure-AppIconFile
