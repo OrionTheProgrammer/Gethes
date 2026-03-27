@@ -188,3 +188,86 @@ def test_aws_store_snake_leaderboard_order(tmp_path) -> None:
         assert int(items[2]["rank"]) == 3
     finally:
         store.close()
+
+
+def test_aws_store_rogue_and_hangman_leaderboard_order(tmp_path) -> None:
+    store = AwsSqliteTelemetryStore(tmp_path / "aws_leaderboard_more.db", online_window_seconds=120)
+    try:
+        base_payload = {
+            "version": "0.11",
+            "profile": {
+                "slot_id": 1,
+                "route_name": "Route 1",
+                "story_page": 0,
+                "story_total": 0,
+                "achievements_unlocked": 0,
+                "achievements_total": 20,
+            },
+            "preferences": {
+                "graphics": "high",
+                "language_active": "es",
+                "ui_scale": 1.0,
+                "theme": "obsidian",
+            },
+        }
+
+        payloads = [
+            {
+                **base_payload,
+                "install_id": "player_one",
+                "player_name": "One",
+                "scores": {
+                    "rogue_best_depth": 3,
+                    "rogue_best_gold": 120,
+                    "rogue_best_kills": 8,
+                    "hangman_wins": 5,
+                    "hangman_games": 11,
+                    "hangman_best_errors_left": 2,
+                },
+            },
+            {
+                **base_payload,
+                "install_id": "player_two",
+                "player_name": "Two",
+                "scores": {
+                    "rogue_best_depth": 6,
+                    "rogue_best_gold": 210,
+                    "rogue_best_kills": 10,
+                    "hangman_wins": 8,
+                    "hangman_games": 15,
+                    "hangman_best_errors_left": 1,
+                },
+            },
+            {
+                **base_payload,
+                "install_id": "player_three",
+                "player_name": "Three",
+                "scores": {
+                    "rogue_best_depth": 6,
+                    "rogue_best_gold": 260,
+                    "rogue_best_kills": 7,
+                    "hangman_wins": 8,
+                    "hangman_games": 13,
+                    "hangman_best_errors_left": 3,
+                },
+            },
+        ]
+        for payload in payloads:
+            store.heartbeat(payload)
+
+        rogue = store.fetch_rogue_leaderboard(limit=3, include_zero=False)
+        rogue_items = rogue["items"]
+        assert isinstance(rogue_items, list)
+        assert rogue_items[0]["player_name"] == "Three"
+        assert rogue_items[1]["player_name"] == "Two"
+        assert rogue_items[2]["player_name"] == "One"
+
+        hangman = store.fetch_hangman_leaderboard(limit=3, include_zero=False)
+        hangman_items = hangman["items"]
+        assert isinstance(hangman_items, list)
+        assert hangman_items[0]["player_name"] == "Three"
+        assert int(hangman_items[0]["hangman_best_errors_left"]) == 3
+        assert hangman_items[1]["player_name"] == "Two"
+        assert hangman_items[2]["player_name"] == "One"
+    finally:
+        store.close()

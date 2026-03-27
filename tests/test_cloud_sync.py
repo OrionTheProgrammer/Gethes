@@ -50,6 +50,13 @@ def test_cloud_leaderboard_requires_link() -> None:
     assert response.message == "not_linked"
 
 
+def test_cloud_leaderboard_rejects_unknown_game() -> None:
+    client = CloudSyncClient("https://api.example.com")
+    response = client.fetch_leaderboard(game="unknown", limit=5)
+    assert response.ok is False
+    assert response.message == "invalid_game"
+
+
 def test_config_store_roundtrip_cloud_and_player(tmp_path: Path) -> None:
     path = tmp_path / "cfg.json"
     store = ConfigStore(path)

@@ -573,6 +573,25 @@ class RoguelikeGame:
             lines.append(f"- {self.app.tr('game.rogue.empty_log')}")
 
         self.app.ui.set_screen("\n".join(lines))
+        panel_fn = getattr(self.app, "set_live_leaderboard_panel", None)
+        if callable(panel_fn):
+            panel_fn(
+                "rogue",
+                current_lines=[
+                    self.app.tr("game.rogue.title", depth=self.depth, max_depth=self.max_depth),
+                    self.app.tr(
+                        "game.rogue.stats",
+                        hp=max(0, self.hp),
+                        max_hp=self.max_hp,
+                        atk=self.atk,
+                        potions=self.potions,
+                        gold=self.gold,
+                        kills=self.kills,
+                        enemies=len(self.enemies),
+                        guard=self.guard_charges,
+                    ),
+                ],
+            )
 
     def _finish(self, won: bool, cancelled: bool, message: str) -> None:
         self.active = False
@@ -594,6 +613,9 @@ class RoguelikeGame:
             self.app.tr("game.rogue.again"),
         ]
         self.app.ui.set_screen("\n".join(lines))
+        clear_panel_fn = getattr(self.app, "clear_live_leaderboard_panel", None)
+        if callable(clear_panel_fn):
+            clear_panel_fn()
 
         if cancelled:
             self.app.audio.play("tick")

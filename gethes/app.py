@@ -359,6 +359,7 @@ class GethesApp:
         self.cloud_sync_elapsed = 0.0
         self.cloud_news_running = False
         self.cloud_leaderboard_running = False
+        self.cloud_leaderboard_running_game = ""
         self.cloud_news_elapsed = 0.0
         self.cloud_news_cooldown = float(self.config.cloud_news_poll_seconds)
         self.cloud_last_news_at = 0.0
@@ -367,6 +368,11 @@ class GethesApp:
         self.cloud_last_message = ""
         self.cloud_last_presence: dict[str, object] = {}
         self.cloud_last_snake_leaderboard: list[dict[str, object]] = []
+        self.cloud_last_rogue_leaderboard: list[dict[str, object]] = []
+        self.cloud_last_hangman_leaderboard: list[dict[str, object]] = []
+        self.cloud_live_leaderboard_interval = 4.0
+        self.cloud_live_leaderboard_elapsed = 0.0
+        self.cloud_live_leaderboard_game = ""
         self.cloud_last_sync_at = 0.0
         self.daily_active_game = ""
         self.daily_active_date = ""
@@ -460,6 +466,8 @@ class GethesApp:
         self.syster_auto_cooldown = 7.0
         self.syster_commands_since_auto = 0
         self.syster_control_running = False
+        self.syster_reply_running = False
+        self.syster_pending_reply: tuple[str, str] | None = None
         self.syster_last_prompt = ""
         self.syster_last_reply = ""
         self.syster_auto_feedback_last_ts = 0.0
@@ -585,6 +593,7 @@ class GethesApp:
 
         self._run_domain("cloud", "autosync_tick", lambda: self._update_cloud_autosync(dt))
         self._run_domain("cloud", "news_tick", lambda: self._update_cloud_news_poll(dt))
+        self._run_domain("cloud", "leaderboard_tick", lambda: self._update_live_leaderboard(dt))
         if self.snake.active:
             self._run_domain("games", "snake_tick", lambda: self.snake.update(dt))
         if self.physics_lab.active:
@@ -1774,16 +1783,127 @@ class GethesApp:
         return True
 
     def _emit_syster_response(self, prompt: str, *, source: str) -> bool:
+        return self._queue_syster_response(prompt, source=source)
+
+    def _queue_syster_response(self, prompt: str, *, source: str) -> bool:
+        normalized_prompt = " ".join((prompt or "").split()).strip()
+        if not normalized_prompt:
+            return False
+        if self.syster_reply_running:
+            self.syster_pending_reply = (normalized_prompt, source)
+            if source in {"player", "player_freeform"}:
+                self.ui.write(self.tr("app.syster.busy"))
+            return True
+
         context = self._build_syster_context()
-        raw_reply_obj = self._run_domain(
-            "syster",
-            "reply",
-            lambda: self.syster.reply(
-                prompt,
-                lambda key, **kwargs: self.tr(key, **kwargs),
-                context=context,
-            ),
-            fallback="",
+        self.syster_reply_running = True
+        if source in {"player", "player_freeform"}:
+            self.ui.set_status(self.tr("app.syster.thinking"))
+
+        def worker() -> None:
+            try:
+                raw_reply_obj = self.syster.reply(
+                    normalized_prompt,
+                    lambda key, **kwargs: self.tr(key, **kwargs),
+                    context=context,
+                )
+                raw_reply = str(raw_reply_obj or "")
+                error_message = ""
+            except Exception as exc:
+                raw_reply = ""
+                error_message = f"{type(exc).__name__}: {exc}"
+            self.update_events.put(
+                (
+                    "syster_reply_done",
+                    {
+                        "prompt": normalized_prompt,
+                        "source": source,
+                        "context": context,
+                        "raw_reply": raw_reply,
+                        "error": error_message,
+                    },
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name=f"gethes-syster-reply-{source}").start()
+        return True
+
+    def _consume_syster_reply_done(self, payload: dict[str, object]) -> None:
+        self.syster_reply_running = False
+        prompt = str(payload.get("prompt", "") or "")
+        source = str(payload.get("source", "") or "player")
+        context = payload.get("context")
+        if not isinstance(context, SysterContext):
+            context = self._build_syster_context()
+        raw_reply = str(payload.get("raw_reply", "") or "")
+        error_message = str(payload.get("error", "") or "").strip()
+
+        if (
+            not self.snake.active
+            and not self.roguelike.active
+            and not self.physics_lab.active
+            and self.input_handler is None
+        ):
+            self.ui.set_status(self.tr("ui.help_hint"))
+
+        if error_message and not raw_reply.strip():
+            if source in {"player", "player_freeform"}:
+                self.ui.write(self.tr("app.syster.error", error=error_message[:220]))
+            self._start_pending_syster_reply()
+            return
+
+        if not raw_reply.strip():
+            self._start_pending_syster_reply()
+            return
+
+        control_command, cleaned_reply = self.syster.extract_control_command(raw_reply)
+        visible_reply = cleaned_reply.strip()
+        if not visible_reply and not control_command:
+            visible_reply = raw_reply.strip()
+        if source == "player":
+            normalized_prompt = " ".join(prompt.split())
+            if normalized_prompt:
+                self.syster_last_prompt = normalized_prompt[:400]
+            if visible_reply:
+                self.syster_last_reply = visible_reply[:800]
+        self.syster.observe_exchange(
+            prompt=prompt,
+            reply=visible_reply,
+            context=context,
+            source=source,
+            intent=self.syster.last_intent,
+        )
+        self._auto_train_syster_feedback(
+            prompt=prompt,
+            reply=visible_reply,
+            source=source,
+        )
+
+        if visible_reply:
+            self.ui.write(self.tr("app.syster.prefix"), play_sound=False)
+            self.ui.write(visible_reply)
+            self.audio.play("message")
+
+        if control_command:
+            self._apply_syster_control_command(control_command, source=source)
+
+        self._start_pending_syster_reply()
+
+    def _start_pending_syster_reply(self) -> None:
+        pending = self.syster_pending_reply
+        self.syster_pending_reply = None
+        if pending is None:
+            return
+        prompt, source = pending
+        self._queue_syster_response(prompt, source=source)
+
+    def _emit_syster_response_sync(self, prompt: str, *, source: str) -> bool:
+        # Reserved for diagnostics where synchronous behavior may still be required.
+        context = self._build_syster_context()
+        raw_reply_obj = self.syster.reply(
+            prompt,
+            lambda key, **kwargs: self.tr(key, **kwargs),
+            context=context,
         )
         raw_reply = str(raw_reply_obj or "")
         if not raw_reply.strip():
@@ -3210,12 +3330,13 @@ class GethesApp:
                     self.ui.write(self.tr("app.cloud.leaderboard_usage"))
                     return
 
-            if game_token not in {"snake", "s"}:
+            game = self._normalize_leaderboard_game(game_token)
+            if not game:
                 self.ui.write(self.tr("app.cloud.leaderboard_game_invalid"))
                 self.ui.write(self.tr("app.cloud.leaderboard_usage"))
                 return
 
-            self._queue_cloud_snake_leaderboard(limit=limit, user_feedback=True)
+            self._queue_cloud_leaderboard(game=game, limit=limit, user_feedback=True)
             return
 
         if action in {"interval", "every", "timer"}:
@@ -3274,6 +3395,162 @@ class GethesApp:
             return
 
         self.ui.write(self.tr("app.cloud.usage"))
+
+    def _normalize_leaderboard_game(self, token: str) -> str:
+        value = token.strip().lower()
+        if value in {"snake", "s"}:
+            return "snake"
+        if value in {"rogue", "roguelike", "rogelike", "dungeon", "r"}:
+            return "rogue"
+        if value in {"hangman", "ahorcado", "forca", "h"}:
+            return "hangman"
+        return ""
+
+    def _leaderboard_cache(self, game: str) -> list[dict[str, object]]:
+        token = game.strip().lower()
+        if token == "rogue":
+            return self.cloud_last_rogue_leaderboard
+        if token == "hangman":
+            return self.cloud_last_hangman_leaderboard
+        return self.cloud_last_snake_leaderboard
+
+    def _active_live_leaderboard_game(self) -> str:
+        if self.snake.active:
+            return "snake"
+        if self.roguelike.active:
+            return "rogue"
+        if self.hangman.active:
+            return "hangman"
+        return ""
+
+    def _update_live_leaderboard(self, dt: float) -> None:
+        game = self._active_live_leaderboard_game()
+        if not game:
+            self.cloud_live_leaderboard_elapsed = 0.0
+            self.cloud_live_leaderboard_game = ""
+            return
+
+        if not self.config.cloud_enabled or not self.cloud.is_linked():
+            return
+
+        if self.cloud_live_leaderboard_game != game:
+            self.cloud_live_leaderboard_game = game
+            self.cloud_live_leaderboard_elapsed = self.cloud_live_leaderboard_interval
+
+        self.cloud_live_leaderboard_elapsed += dt
+        if self.cloud_live_leaderboard_elapsed < self.cloud_live_leaderboard_interval:
+            return
+        self.cloud_live_leaderboard_elapsed = 0.0
+        self._queue_cloud_leaderboard(game=game, limit=6, user_feedback=False)
+
+    def set_live_leaderboard_panel(self, game: str, current_lines: list[str] | None = None) -> None:
+        token = self._normalize_leaderboard_game(game)
+        if not token:
+            self.ui.clear_side_panel()
+            return
+
+        lines: list[str] = []
+        if current_lines:
+            lines.extend([str(item).strip() for item in current_lines if str(item).strip()])
+            if lines:
+                lines.append("")
+
+        rows = self._leaderboard_cache(token)
+        if token == "rogue":
+            title = self.tr("app.cloud.sidebar.rogue.title")
+            if rows:
+                for row in rows[:5]:
+                    lines.append(
+                        self.tr(
+                            "app.cloud.sidebar.rogue.item",
+                            rank=int(row.get("rank", 0) or 0),
+                            name=str(row.get("player_name", "") or "Guest"),
+                            depth=int(row.get("rogue_best_depth", 0) or 0),
+                            gold=int(row.get("rogue_best_gold", 0) or 0),
+                            kills=int(row.get("rogue_best_kills", 0) or 0),
+                        )
+                    )
+            else:
+                lines.append(self.tr("app.cloud.sidebar.empty"))
+            self.ui.set_side_panel(title=title, lines=lines)
+            return
+
+        if token == "hangman":
+            title = self.tr("app.cloud.sidebar.hangman.title")
+            if rows:
+                for row in rows[:5]:
+                    lines.append(
+                        self.tr(
+                            "app.cloud.sidebar.hangman.item",
+                            rank=int(row.get("rank", 0) or 0),
+                            name=str(row.get("player_name", "") or "Guest"),
+                            wins=int(row.get("hangman_wins", 0) or 0),
+                            games=int(row.get("hangman_games", 0) or 0),
+                            clean=int(row.get("hangman_best_errors_left", 0) or 0),
+                        )
+                    )
+            else:
+                lines.append(self.tr("app.cloud.sidebar.empty"))
+            self.ui.set_side_panel(title=title, lines=lines)
+            return
+
+        title = self.tr("app.cloud.sidebar.snake.title")
+        if rows:
+            for row in rows[:5]:
+                lines.append(
+                    self.tr(
+                        "app.cloud.sidebar.snake.item",
+                        rank=int(row.get("rank", 0) or 0),
+                        name=str(row.get("player_name", "") or "Guest"),
+                        score=int(row.get("snake_best_score", 0) or 0),
+                        level=int(row.get("snake_best_level", 0) or 0),
+                        length=int(row.get("snake_longest_length", 0) or 0),
+                    )
+                )
+        else:
+            lines.append(self.tr("app.cloud.sidebar.empty"))
+        self.ui.set_side_panel(title=title, lines=lines)
+
+    def clear_live_leaderboard_panel(self) -> None:
+        self.ui.clear_side_panel()
+
+    def _refresh_active_game_side_panel(self) -> None:
+        if self.snake.active:
+            self.set_live_leaderboard_panel(
+                "snake",
+                current_lines=[
+                    self.tr("game.snake.title", score=self.snake.score, level=self.snake.level),
+                    self.tr("game.snake.foods", count=self.snake.foods_eaten),
+                ],
+            )
+            return
+        if self.roguelike.active:
+            self.set_live_leaderboard_panel(
+                "rogue",
+                current_lines=[
+                    self.tr("game.rogue.title", depth=self.roguelike.depth, max_depth=self.roguelike.max_depth),
+                    self.tr(
+                        "game.rogue.stats",
+                        hp=max(0, self.roguelike.hp),
+                        max_hp=self.roguelike.max_hp,
+                        atk=self.roguelike.atk,
+                        potions=self.roguelike.potions,
+                        gold=self.roguelike.gold,
+                        kills=self.roguelike.kills,
+                        enemies=len(self.roguelike.enemies),
+                        guard=self.roguelike.guard_charges,
+                    ),
+                ],
+            )
+            return
+        if self.hangman.active:
+            self.set_live_leaderboard_panel(
+                "hangman",
+                current_lines=[
+                    self.tr("game.hangman.title", mode=self.hangman.mode),
+                    self.tr("game.hangman.left", count=max(0, self.hangman.max_errors - self.hangman.errors)),
+                ],
+            )
 
     def _show_cloud_status(self) -> None:
         enabled = self.config.cloud_enabled and self.cloud.is_linked()
@@ -3532,6 +3809,9 @@ class GethesApp:
                 "rogue_best_kills": self.get_stat("rogue_best_kills"),
                 "rogue_runs": self.get_stat("rogue_runs"),
                 "rogue_wins": self.get_stat("rogue_wins"),
+                "hangman_wins": self.get_stat("hangman_wins"),
+                "hangman_games": self.get_stat("hangman_games"),
+                "hangman_best_errors_left": self.get_stat("hangman_best_errors_left"),
                 "daily_completed_total": self.get_stat("daily_completed_total"),
                 "daily_streak_any": self.get_stat("daily_streak_any"),
             },
@@ -3629,12 +3909,16 @@ class GethesApp:
         threading.Thread(target=worker, daemon=True, name="gethes-cloud-presence").start()
         return True
 
-    def _queue_cloud_snake_leaderboard(
+    def _queue_cloud_leaderboard(
         self,
         *,
+        game: str,
         limit: int = 10,
         user_feedback: bool = False,
     ) -> bool:
+        game_token = self._normalize_leaderboard_game(game)
+        if not game_token:
+            return False
         if not self.config.cloud_enabled or not self.cloud.is_linked():
             return False
         if self.cloud_leaderboard_running:
@@ -3644,15 +3928,17 @@ class GethesApp:
 
         limit_value = max(1, min(50, int(limit)))
         self.cloud_leaderboard_running = True
+        self.cloud_leaderboard_running_game = game_token
         if user_feedback:
-            self.ui.write(self.tr("app.cloud.leaderboard_query"))
+            self.ui.write(self.tr("app.cloud.leaderboard_query", game=game_token.upper()))
 
         def worker() -> None:
-            response = self.cloud.fetch_snake_leaderboard(limit=limit_value)
+            response = self.cloud.fetch_leaderboard(game=game_token, limit=limit_value)
             self.update_events.put(
                 (
-                    "cloud_snake_leaderboard_done",
+                    "cloud_leaderboard_done",
                     {
+                        "game": game_token,
                         "ok": response.ok,
                         "status_code": response.status_code,
                         "message": response.message,
@@ -3662,7 +3948,7 @@ class GethesApp:
                 )
             )
 
-        threading.Thread(target=worker, daemon=True, name="gethes-cloud-snake-leaderboard").start()
+        threading.Thread(target=worker, daemon=True, name=f"gethes-cloud-{game_token}-leaderboard").start()
         return True
 
     def _queue_cloud_news(
@@ -3710,7 +3996,7 @@ class GethesApp:
             return
         if self.input_handler is not None:
             return
-        if self.snake.active or self.physics_lab.active or self.roguelike.active:
+        if self.snake.active or self.hangman.active or self.physics_lab.active or self.roguelike.active:
             return
 
         self.cloud_sync_elapsed += dt
@@ -4664,11 +4950,11 @@ class GethesApp:
                 self._run_domain("cloud", "consume_presence_done", lambda: self._consume_cloud_presence_done(payload))
                 continue
 
-            if event == "cloud_snake_leaderboard_done":
+            if event == "cloud_leaderboard_done":
                 self._run_domain(
                     "cloud",
-                    "consume_snake_leaderboard_done",
-                    lambda: self._consume_cloud_snake_leaderboard_done(payload),
+                    "consume_leaderboard_done",
+                    lambda: self._consume_cloud_leaderboard_done(payload),
                 )
                 continue
 
@@ -4678,6 +4964,10 @@ class GethesApp:
 
             if event == "cloud_news_done":
                 self._run_domain("cloud", "consume_news_done", lambda: self._consume_cloud_news_done(payload))
+                continue
+
+            if event == "syster_reply_done":
+                self._run_domain("syster", "consume_reply_done", lambda: self._consume_syster_reply_done(payload))
                 continue
 
             if event == "terminal_result":
@@ -4785,8 +5075,12 @@ class GethesApp:
         if user_feedback:
             self.ui.write(self.tr("app.cloud.sync_failed", error=(message or "network_error")))
 
-    def _consume_cloud_snake_leaderboard_done(self, payload: dict[str, object]) -> None:
+    def _consume_cloud_leaderboard_done(self, payload: dict[str, object]) -> None:
         self.cloud_leaderboard_running = False
+        self.cloud_leaderboard_running_game = ""
+        game = self._normalize_leaderboard_game(str(payload.get("game", "") or "snake"))
+        if not game:
+            game = "snake"
         ok = bool(payload.get("ok", False))
         message = str(payload.get("message", "")).strip()
         data = payload.get("payload")
@@ -4797,7 +5091,13 @@ class GethesApp:
 
         if not ok:
             if user_feedback:
-                self.ui.write(self.tr("app.cloud.leaderboard_failed", error=(message or "network_error")))
+                self.ui.write(
+                    self.tr(
+                        "app.cloud.leaderboard_failed",
+                        game=game.upper(),
+                        error=(message or "network_error"),
+                    )
+                )
             return
 
         if not isinstance(data, dict):
@@ -4811,7 +5111,13 @@ class GethesApp:
         for item in items:
             if isinstance(item, dict):
                 parsed_items.append(item)
-        self.cloud_last_snake_leaderboard = parsed_items
+        if game == "rogue":
+            self.cloud_last_rogue_leaderboard = parsed_items
+        elif game == "hangman":
+            self.cloud_last_hangman_leaderboard = parsed_items
+        else:
+            self.cloud_last_snake_leaderboard = parsed_items
+        self._refresh_active_game_side_panel()
 
         if not user_feedback:
             return
@@ -4819,11 +5125,45 @@ class GethesApp:
             self.ui.write(self.tr("app.cloud.leaderboard_empty"))
             return
 
-        self.ui.write(self.tr("app.cloud.leaderboard_title", count=len(parsed_items)))
+        if game == "rogue":
+            self.ui.write(self.tr("app.cloud.leaderboard.rogue.title", count=len(parsed_items)))
+            for row in parsed_items:
+                self.ui.write(
+                    self.tr(
+                        "app.cloud.leaderboard.rogue.item",
+                        rank=int(row.get("rank", 0) or 0),
+                        name=str(row.get("player_name", "") or "Guest"),
+                        depth=int(row.get("rogue_best_depth", 0) or 0),
+                        gold=int(row.get("rogue_best_gold", 0) or 0),
+                        kills=int(row.get("rogue_best_kills", 0) or 0),
+                        route=str(row.get("route_name", "") or "-"),
+                        version=str(row.get("version_tag", "") or "-"),
+                    )
+                )
+            return
+
+        if game == "hangman":
+            self.ui.write(self.tr("app.cloud.leaderboard.hangman.title", count=len(parsed_items)))
+            for row in parsed_items:
+                self.ui.write(
+                    self.tr(
+                        "app.cloud.leaderboard.hangman.item",
+                        rank=int(row.get("rank", 0) or 0),
+                        name=str(row.get("player_name", "") or "Guest"),
+                        wins=int(row.get("hangman_wins", 0) or 0),
+                        games=int(row.get("hangman_games", 0) or 0),
+                        clean=int(row.get("hangman_best_errors_left", 0) or 0),
+                        route=str(row.get("route_name", "") or "-"),
+                        version=str(row.get("version_tag", "") or "-"),
+                    )
+                )
+            return
+
+        self.ui.write(self.tr("app.cloud.leaderboard.snake.title", count=len(parsed_items)))
         for row in parsed_items:
             self.ui.write(
                 self.tr(
-                    "app.cloud.leaderboard_item",
+                    "app.cloud.leaderboard.snake.item",
                     rank=int(row.get("rank", 0) or 0),
                     name=str(row.get("player_name", "") or "Guest"),
                     score=int(row.get("snake_best_score", 0) or 0),

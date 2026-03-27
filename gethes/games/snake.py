@@ -202,6 +202,15 @@ class SnakeGame:
             lines.append(self.app.tr("game.snake.again"))
 
         self.app.ui.set_screen("\n".join(lines))
+        panel_fn = getattr(self.app, "set_live_leaderboard_panel", None)
+        if callable(panel_fn):
+            panel_fn(
+                "snake",
+                current_lines=[
+                    self.app.tr("game.snake.title", score=self.score, level=self.level),
+                    self.app.tr("game.snake.foods", count=self.foods_eaten),
+                ],
+            )
 
     def _finish(self, message: str, game_over: bool, user_exit: bool = False) -> None:
         self.active = False
@@ -213,6 +222,9 @@ class SnakeGame:
         self.app.ui.set_entry_enabled(True)
         self.app.ui.set_status(self.app.tr("ui.ready"))
         self._render(message=message)
+        clear_panel_fn = getattr(self.app, "clear_live_leaderboard_panel", None)
+        if callable(clear_panel_fn):
+            clear_panel_fn()
         self.app.audio.play("game_over" if game_over else "success")
         self.app.on_snake_finished(
             score=self.score,

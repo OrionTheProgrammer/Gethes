@@ -147,6 +147,9 @@ class AwsSqliteTelemetryStore:
                     rogue_best_kills INTEGER NOT NULL DEFAULT 0,
                     rogue_runs INTEGER NOT NULL DEFAULT 0,
                     rogue_wins INTEGER NOT NULL DEFAULT 0,
+                    hangman_wins INTEGER NOT NULL DEFAULT 0,
+                    hangman_games INTEGER NOT NULL DEFAULT 0,
+                    hangman_best_errors_left INTEGER NOT NULL DEFAULT 0,
                     graphics_mode TEXT NOT NULL DEFAULT '',
                     language_active TEXT NOT NULL DEFAULT '',
                     ui_scale REAL NOT NULL DEFAULT 1.0,
@@ -234,7 +237,23 @@ class AwsSqliteTelemetryStore:
                 );
                 """
             )
+            self._ensure_players_columns(
+                {
+                    "hangman_wins": "INTEGER NOT NULL DEFAULT 0",
+                    "hangman_games": "INTEGER NOT NULL DEFAULT 0",
+                    "hangman_best_errors_left": "INTEGER NOT NULL DEFAULT 0",
+                }
+            )
             self._conn.commit()
+
+    def _ensure_players_columns(self, expected: dict[str, str]) -> None:
+        rows = self._conn.execute("PRAGMA table_info(players)").fetchall()
+        existing = {str(row["name"]).strip().lower() for row in rows}
+        for column_name, column_def in expected.items():
+            token = column_name.strip().lower()
+            if not token or token in existing:
+                continue
+            self._conn.execute(f"ALTER TABLE players ADD COLUMN {column_name} {column_def}")
 
     @staticmethod
     def _compact(value: object, limit: int) -> str:
@@ -642,9 +661,10 @@ class AwsSqliteTelemetryStore:
                         story_page, story_total, achievements_unlocked, achievements_total,
                         snake_best_score, snake_best_level, snake_longest_length,
                         rogue_best_depth, rogue_best_gold, rogue_best_kills, rogue_runs, rogue_wins,
+                        hangman_wins, hangman_games, hangman_best_errors_left,
                         graphics_mode, language_active, ui_scale, theme_name, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         install_id,
@@ -665,6 +685,9 @@ class AwsSqliteTelemetryStore:
                         _as_int(scores.get("rogue_best_kills")),
                         _as_int(scores.get("rogue_runs")),
                         _as_int(scores.get("rogue_wins")),
+                        _as_int(scores.get("hangman_wins")),
+                        _as_int(scores.get("hangman_games")),
+                        _as_int(scores.get("hangman_best_errors_left")),
                         self._compact(prefs.get("graphics", ""), 16),
                         self._compact(prefs.get("language_active", ""), 8),
                         round(_as_float(prefs.get("ui_scale"), 1.0), 2),
@@ -693,6 +716,9 @@ class AwsSqliteTelemetryStore:
                         rogue_best_kills = MAX(rogue_best_kills, ?),
                         rogue_runs = MAX(rogue_runs, ?),
                         rogue_wins = MAX(rogue_wins, ?),
+                        hangman_wins = MAX(hangman_wins, ?),
+                        hangman_games = MAX(hangman_games, ?),
+                        hangman_best_errors_left = MAX(hangman_best_errors_left, ?),
                         graphics_mode = ?,
                         language_active = ?,
                         ui_scale = ?,
@@ -718,6 +744,9 @@ class AwsSqliteTelemetryStore:
                         _as_int(scores.get("rogue_best_kills")),
                         _as_int(scores.get("rogue_runs")),
                         _as_int(scores.get("rogue_wins")),
+                        _as_int(scores.get("hangman_wins")),
+                        _as_int(scores.get("hangman_games")),
+                        _as_int(scores.get("hangman_best_errors_left")),
                         self._compact(prefs.get("graphics", ""), 16),
                         self._compact(prefs.get("language_active", ""), 8),
                         round(_as_float(prefs.get("ui_scale"), 1.0), 2),
@@ -920,6 +949,110 @@ class AwsSqliteTelemetryStore:
             "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
+    def fetch_rogue_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> dict[str, object]:
+        limit_value = max(1, min(50, int(limit)))
+        where_clause = "" if include_zero else "WHERE rogue_best_depth > 0 OR rogue_best_gold > 0"
+
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    player_name,
+                    rogue_best_depth,
+                    rogue_best_gold,
+                    rogue_best_kills,
+                    route_name,
+                    version_tag,
+                    last_seen
+                FROM players
+                {where_clause}
+                ORDER BY rogue_best_depth DESC, rogue_best_gold DESC, rogue_best_kills DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (limit_value,),
+            ).fetchall()
+
+        items: list[dict[str, object]] = []
+        for idx, row in enumerate(rows, start=1):
+            last_seen_raw = _as_float(row["last_seen"], 0.0)
+            last_seen_utc = (
+                datetime.fromtimestamp(last_seen_raw, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if last_seen_raw > 0
+                else ""
+            )
+            items.append(
+                {
+                    "rank": idx,
+                    "player_name": sanitize_name(str(row["player_name"] or "Guest")),
+                    "rogue_best_depth": _as_int(row["rogue_best_depth"]),
+                    "rogue_best_gold": _as_int(row["rogue_best_gold"]),
+                    "rogue_best_kills": _as_int(row["rogue_best_kills"]),
+                    "route_name": self._compact(row["route_name"], 128),
+                    "version_tag": self._compact(row["version_tag"], 32),
+                    "last_seen_utc": last_seen_utc,
+                }
+            )
+
+        return {
+            "ok": True,
+            "game": "rogue",
+            "count": len(items),
+            "items": items,
+            "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+    def fetch_hangman_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> dict[str, object]:
+        limit_value = max(1, min(50, int(limit)))
+        where_clause = "" if include_zero else "WHERE hangman_wins > 0"
+
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT
+                    player_name,
+                    hangman_wins,
+                    hangman_games,
+                    hangman_best_errors_left,
+                    route_name,
+                    version_tag,
+                    last_seen
+                FROM players
+                {where_clause}
+                ORDER BY hangman_wins DESC, hangman_best_errors_left DESC, hangman_games DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (limit_value,),
+            ).fetchall()
+
+        items: list[dict[str, object]] = []
+        for idx, row in enumerate(rows, start=1):
+            last_seen_raw = _as_float(row["last_seen"], 0.0)
+            last_seen_utc = (
+                datetime.fromtimestamp(last_seen_raw, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if last_seen_raw > 0
+                else ""
+            )
+            items.append(
+                {
+                    "rank": idx,
+                    "player_name": sanitize_name(str(row["player_name"] or "Guest")),
+                    "hangman_wins": _as_int(row["hangman_wins"]),
+                    "hangman_games": _as_int(row["hangman_games"]),
+                    "hangman_best_errors_left": _as_int(row["hangman_best_errors_left"]),
+                    "route_name": self._compact(row["route_name"], 128),
+                    "version_tag": self._compact(row["version_tag"], 32),
+                    "last_seen_utc": last_seen_utc,
+                }
+            )
+
+        return {
+            "ok": True,
+            "game": "hangman",
+            "count": len(items),
+            "items": items,
+            "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
     def heartbeat(self, payload: dict[str, object]) -> dict[str, object]:
         install_id = self._upsert_player(payload)
         player_name = sanitize_name(str(payload.get("player_name", "Guest")))
@@ -1022,7 +1155,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, data)
             return
-        if route == "/v1/leaderboard/snake":
+        if route in {"/v1/leaderboard/snake", "/v1/leaderboard/rogue", "/v1/leaderboard/hangman"}:
             if self.store is None:
                 self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "message": "store_unavailable"})
                 return
@@ -1034,8 +1167,14 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                 include_zero_raw = str(query["include_zero"][0]).strip().lower()
             limit = max(1, min(50, _as_int(limit_raw, 10)))
             include_zero = include_zero_raw in {"1", "true", "on", "yes"}
+            game = route.rsplit("/", 1)[-1].strip().lower()
             try:
-                data = self.store.fetch_snake_leaderboard(limit=limit, include_zero=include_zero)
+                if game == "rogue":
+                    data = self.store.fetch_rogue_leaderboard(limit=limit, include_zero=include_zero)
+                elif game == "hangman":
+                    data = self.store.fetch_hangman_leaderboard(limit=limit, include_zero=include_zero)
+                else:
+                    data = self.store.fetch_snake_leaderboard(limit=limit, include_zero=include_zero)
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)})
                 return

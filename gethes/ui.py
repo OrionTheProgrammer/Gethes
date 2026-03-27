@@ -118,6 +118,8 @@ class ConsoleUI:
         self.max_notifications = 4
         self.action_buttons: list[ActionButton] = []
         self._action_button_hit_areas: list[tuple[pygame.Rect, ActionButton]] = []
+        self.side_panel_title = ""
+        self.side_panel_lines: list[str] = []
         self.icons = IconPack()
         self.icons.preload(
             [
@@ -644,6 +646,22 @@ class ConsoleUI:
         self.action_buttons = []
         self._action_button_hit_areas = []
 
+    def set_side_panel(self, *, title: str, lines: Sequence[str]) -> None:
+        panel_title = " ".join(str(title or "").split()).strip()
+        panel_lines: list[str] = []
+        for item in lines:
+            text = str(item or "").strip()
+            if not text:
+                panel_lines.append("")
+            else:
+                panel_lines.append(text[:180])
+        self.side_panel_title = panel_title[:80]
+        self.side_panel_lines = panel_lines[:26]
+
+    def clear_side_panel(self) -> None:
+        self.side_panel_title = ""
+        self.side_panel_lines = []
+
     def reload_visual_assets(self) -> None:
         self._rogue_asset_raw_cache = {}
         self._rogue_tile_cache = {}
@@ -755,6 +773,7 @@ class ConsoleUI:
             self.output_lines = []
         else:
             self.output_lines = content.splitlines()
+        self.clear_side_panel()
         self._trim_output_lines()
         self._output_revision += 1
         self.output_scroll = 0
@@ -1134,7 +1153,26 @@ class ConsoleUI:
         )
         self._apply_panel_entry_animation(header_rect, output_rect, input_rect, status_rect)
 
-        self._draw_panel(output_rect)
+        output_main_rect = pygame.Rect(output_rect)
+        sidebar_rect: pygame.Rect | None = None
+        has_sidebar_content = bool(self.side_panel_title or self.side_panel_lines)
+        min_sidebar_total_w = self._scale_px(520)
+        if has_sidebar_content and output_rect.width >= min_sidebar_total_w:
+            split_gap = self._scale_px(10)
+            target_sidebar_w = int(output_rect.width * 0.31)
+            sidebar_w = max(self._scale_px(210), min(self._scale_px(360), target_sidebar_w))
+            if (output_rect.width - sidebar_w - split_gap) >= self._scale_px(280):
+                output_main_rect.width = output_rect.width - sidebar_w - split_gap
+                sidebar_rect = pygame.Rect(
+                    output_main_rect.right + split_gap,
+                    output_rect.y,
+                    sidebar_w,
+                    output_rect.height,
+                )
+
+        self._draw_panel(output_main_rect)
+        if sidebar_rect is not None:
+            self._draw_panel(sidebar_rect)
         self._draw_panel(input_rect)
         if actions_h > 0:
             self._draw_panel(actions_rect)
@@ -1142,7 +1180,9 @@ class ConsoleUI:
         self._draw_panel(status_rect)
 
         self._draw_header(header_rect)
-        self._draw_output(output_rect)
+        self._draw_output(output_main_rect)
+        if sidebar_rect is not None:
+            self._draw_side_panel(sidebar_rect)
         if actions_h > 0:
             self._draw_action_buttons(actions_rect)
         else:
@@ -1535,6 +1575,52 @@ class ConsoleUI:
                 border_radius=self._scale_px(2),
             )
             self.screen.blit(sweep_layer, (rect.x + self._scale_px(5), sweep_y))
+
+    def _draw_side_panel(self, rect: pygame.Rect) -> None:
+        if not self.side_panel_title and not self.side_panel_lines:
+            return
+
+        pad_x = self._scale_px(10)
+        pad_y = self._scale_px(8)
+        line_gap = max(1, self._scale_px(2))
+        y = rect.y + pad_y
+        x = rect.x + pad_x
+        usable_w = max(20, rect.width - (pad_x * 2))
+
+        title = self.side_panel_title or "Leaderboard"
+        title_surface = self.header_font.render(title, True, self._mix(self.fg_color, pygame.Color("#FFFFFF"), 0.2))
+        self.screen.blit(title_surface, (x, y))
+        y += title_surface.get_height() + self._scale_px(6)
+
+        divider = pygame.Rect(x, y, usable_w, max(1, self._scale_px(1)))
+        pygame.draw.rect(
+            self.screen,
+            self._mix(self.accent_color, self.dim_color, 0.35),
+            divider,
+            border_radius=max(1, self._scale_px(1)),
+        )
+        y += self._scale_px(7)
+
+        max_chars = max(8, usable_w // max(1, self.status_font.size("M")[0]))
+        available_h = rect.bottom - y - self._scale_px(8)
+        line_h = self.status_font.get_linesize()
+        max_lines = max(1, available_h // max(1, line_h))
+
+        rendered_lines: list[str] = []
+        for line in self.side_panel_lines:
+            wrapped = self._wrap_lines([line], max_chars=max_chars)
+            rendered_lines.extend(wrapped or [""])
+            if len(rendered_lines) >= max_lines:
+                break
+        rendered_lines = rendered_lines[:max_lines]
+
+        for line in rendered_lines:
+            if y + line_h > rect.bottom - self._scale_px(4):
+                break
+            color = self.dim_color if not line.strip() else self.fg_color
+            surface = self.status_font.render(line, True, color)
+            self.screen.blit(surface, (x, y))
+            y += line_h + line_gap
 
     def _draw_rogue_tile_row(
         self,

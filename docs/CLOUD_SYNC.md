@@ -22,7 +22,7 @@ Cloud sync is used to persist and aggregate:
 - `cloud key <token|off>`
 - `cloud sync`
 - `cloud online`
-- `cloud leaderboard [snake] [count]`
+- `cloud leaderboard [snake|rogue|hangman] [count]`
 - `cloud interval <20-600>`
 - `cloud news [count]`
 - `cloud newsinterval <60-3600>`
@@ -54,6 +54,8 @@ Example:
 - `GET /v1/auth/me`
 - `GET /v1/news`
 - `GET /v1/leaderboard/snake`
+- `GET /v1/leaderboard/rogue`
+- `GET /v1/leaderboard/hangman`
 
 ## Authentication Layers
 
@@ -212,9 +214,9 @@ News items are sourced from:
 - latest GitHub release,
 - latest repository commits.
 
-## Snake Leaderboard Contract (High Level)
+## Leaderboard Contract (High Level)
 
-`GET /v1/leaderboard/snake?limit=10`  
+`GET /v1/leaderboard/<snake|rogue|hangman>?limit=10`  
 Headers: API key only (session token not required)
 
 Response shape:
@@ -239,6 +241,16 @@ Response shape:
   "generated_at_utc": "2026-03-27T00:17:01Z"
 }
 ```
+
+Rogue items use:
+- `rogue_best_depth`
+- `rogue_best_gold`
+- `rogue_best_kills`
+
+Hangman items use:
+- `hangman_wins`
+- `hangman_games`
+- `hangman_best_errors_left`
 
 ## Recommended Security
 

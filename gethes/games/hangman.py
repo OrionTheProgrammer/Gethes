@@ -86,6 +86,9 @@ class HangmanGame:
         self.waiting_secret_word = True
         self.active = False
         self.mode = "2P"
+        clear_panel_fn = getattr(self.app, "clear_live_leaderboard_panel", None)
+        if callable(clear_panel_fn):
+            clear_panel_fn()
         self.app.set_input_handler(self._capture_secret_word)
         self.app.ui.set_echo(False)
         self.app.ui.set_input_mask(True)
@@ -127,6 +130,9 @@ class HangmanGame:
         self.app.ui.set_echo(True)
         self.app.ui.set_input_mask(False)
         self.app.ui.set_status(self.app.tr("ui.ready"))
+        clear_panel_fn = getattr(self.app, "clear_live_leaderboard_panel", None)
+        if callable(clear_panel_fn):
+            clear_panel_fn()
         self.app.ui.set_screen(self.app.tr("game.hangman.cancelled_setup"))
 
     def _start_round(self, word: str, mode: str) -> None:
@@ -262,6 +268,15 @@ class HangmanGame:
         if message:
             lines.extend(["", message])
         self.app.ui.set_screen("\n".join(lines))
+        panel_fn = getattr(self.app, "set_live_leaderboard_panel", None)
+        if callable(panel_fn):
+            panel_fn(
+                "hangman",
+                current_lines=[
+                    self.app.tr("game.hangman.title", mode=self.mode),
+                    self.app.tr("game.hangman.left", count=max(0, self.max_errors - self.errors)),
+                ],
+            )
 
     def _finish(self, message: str, won: bool, cancelled: bool = False) -> None:
         self.active = False
@@ -285,6 +300,9 @@ class HangmanGame:
                 self.app.tr("game.hangman.again"),
             ]
             self.app.ui.set_screen("\n".join(lines))
+            clear_panel_fn = getattr(self.app, "clear_live_leaderboard_panel", None)
+            if callable(clear_panel_fn):
+                clear_panel_fn()
             self.app.audio.play("success" if won else "game_over")
             self.app.on_hangman_finished(
                 won=won,
@@ -295,6 +313,9 @@ class HangmanGame:
             return
 
         self.app.ui.set_screen(f"{message}\n{self.app.tr('generic.exit_help')}")
+        clear_panel_fn = getattr(self.app, "clear_live_leaderboard_panel", None)
+        if callable(clear_panel_fn):
+            clear_panel_fn()
 
     @staticmethod
     def _is_valid_secret_word(value: str) -> bool:

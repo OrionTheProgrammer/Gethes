@@ -171,9 +171,18 @@ class CloudSyncClient:
             payload=payload,
         )
 
-    def fetch_snake_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> CloudResponse:
+    def fetch_leaderboard(
+        self,
+        *,
+        game: str,
+        limit: int = 10,
+        include_zero: bool = False,
+    ) -> CloudResponse:
         if not self.is_linked():
             return CloudResponse(False, 0, "not_linked", {})
+        token = game.strip().lower()
+        if token not in {"snake", "rogue", "hangman"}:
+            return CloudResponse(False, 0, "invalid_game", {})
         try:
             limit_value = int(limit)
         except (TypeError, ValueError):
@@ -185,9 +194,18 @@ class CloudSyncClient:
             payload["include_zero"] = 1
         return self._request_json(
             method="GET",
-            path="/v1/leaderboard/snake",
+            path=f"/v1/leaderboard/{token}",
             payload=payload,
         )
+
+    def fetch_snake_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> CloudResponse:
+        return self.fetch_leaderboard(game="snake", limit=limit, include_zero=include_zero)
+
+    def fetch_rogue_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> CloudResponse:
+        return self.fetch_leaderboard(game="rogue", limit=limit, include_zero=include_zero)
+
+    def fetch_hangman_leaderboard(self, *, limit: int = 10, include_zero: bool = False) -> CloudResponse:
+        return self.fetch_leaderboard(game="hangman", limit=limit, include_zero=include_zero)
 
     def _request_json(
         self,
